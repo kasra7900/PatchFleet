@@ -19,11 +19,13 @@ from .contracts import (
     Plan,
     RunRecord,
     RunState,
+    TaskSpec,
     canonical_plan_json,
     plan_fingerprint,
 )
 from .events import Event, EventType, event_json
-from .state import transition
+from .scheduler import TaskState
+from .state import has_plan_execution_approval, transition
 
 
 class StoreError(ValueError):
@@ -41,24 +43,31 @@ class EventLogCorruption(StoreError):
 class SQLiteStore:
     """Single-process local store. Every mutation commits its event in SQLite."""
 
-    def __init__(self, directory: str | Path | None = None) -> None:
+    def __init__(self, directory: str | Path | None = None, *, read_only: bool = False) -> None:
         self.directory = Path(directory) if directory is not None else Path.cwd() / ".patchfleet"
-        self.directory.mkdir(parents=True, exist_ok=True)
+        if not read_only:
+            self.directory.mkdir(parents=True, exist_ok=True)
         self.events_directory = self.directory / "events"
-        self.events_directory.mkdir(exist_ok=True)
+        if not read_only:
+            self.events_directory.mkdir(exist_ok=True)
         self.database_path = self.directory / "patchfleet.sqlite3"
         self._lock = RLock()
         self._connection = sqlite3.connect(
-            self.database_path, isolation_level=None, check_same_thread=False
+            f"file:{self.database_path}?mode=ro" if read_only else self.database_path,
+            uri=read_only,
+            isolation_level=None,
+            check_same_thread=False,
         )
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA journal_mode = WAL")
-        self._connection.execute("PRAGMA synchronous = FULL")
+        if not read_only:
+            self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection.execute("PRAGMA synchronous = FULL")
         self.last_mirror_error: str | None = None
         try:
-            self._create_schema()
-            self.reconcile_events()
+            if not read_only:
+                self._create_schema()
+                self.reconcile_events()
         except BaseException:
             self._connection.close()
             raise
@@ -116,6 +125,45 @@ class SQLiteStore:
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY (run_id, sequence),
                 FOREIGN KEY (run_id) REFERENCES runs(run_id)
+            );
+            CREATE TABLE IF NOT EXISTS run_targets (
+                run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                target_repository TEXT NOT NULL,
+                base_commit TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_runs (
+                task_run_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                task_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                state TEXT NOT NULL,
+                worktree_path TEXT,
+                branch TEXT,
+                base_commit TEXT,
+                changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                out_of_scope_paths_json TEXT NOT NULL DEFAULT '[]',
+                reason TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(run_id, task_id)
+            );
+            CREATE TABLE IF NOT EXISTS worker_attempts (
+                attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_run_id TEXT NOT NULL REFERENCES task_runs(task_run_id),
+                attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                pid INTEGER,
+                exit_code INTEGER,
+                duration_seconds REAL,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                cancelled INTEGER NOT NULL DEFAULT 0,
+                stdout_bytes INTEGER NOT NULL DEFAULT 0,
+                stderr_bytes INTEGER NOT NULL DEFAULT 0,
+                output_truncated INTEGER NOT NULL DEFAULT 0,
+                reason TEXT,
+                UNIQUE(task_run_id, attempt_number)
             );
             """
         )
@@ -450,3 +498,308 @@ class SQLiteStore:
                 )
             self._mirror_after_commit_unlocked(run_id)
             return updated
+
+    def initialize_execution(self, run_id: str, repository: Path, base_commit: str) -> None:
+        """Pin a validated run to a target and create pending task rows."""
+        with self._lock, self._transaction():
+            run = self._run_unlocked(run_id)
+            if run.state != RunState.WAITING_FOR_APPROVAL:
+                raise StoreError("execution setup requires WAITING_FOR_APPROVAL")
+            plan = self._plan_unlocked(run)
+            self._connection.execute(
+                "INSERT INTO run_targets VALUES (?, ?, ?)",
+                (run_id, str(repository.resolve()), base_commit),
+            )
+            for task in plan.tasks:
+                self._connection.execute(
+                    "INSERT INTO task_runs (task_run_id, run_id, task_id, provider, model, state, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"{run_id}:{task.task_id}",
+                        run_id,
+                        task.task_id,
+                        task.assigned_provider,
+                        task.selected_model,
+                        TaskState.PENDING.value,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+
+    def get_target(self, run_id: str) -> dict[str, str]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT target_repository, base_commit FROM run_targets WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError("run has no Phase 2 target repository")
+            return dict(row)
+
+    def list_task_runs(self, run_id: str) -> list[dict[str, object]]:
+        with self._lock:
+            self._run_unlocked(run_id)
+            rows = self._connection.execute(
+                "SELECT * FROM task_runs WHERE run_id = ? ORDER BY task_id", (run_id,)
+            ).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "changed_paths": json.loads(row["changed_paths_json"]),
+                    "out_of_scope_paths": json.loads(row["out_of_scope_paths_json"]),
+                }
+                for row in rows
+            ]
+
+    def list_attempts(self, task_run_id: str) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM worker_attempts WHERE task_run_id = ? ORDER BY attempt_number",
+                (task_run_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def _require_ready_task_unlocked(self, run: RunRecord, task_id: str, row: sqlite3.Row) -> None:
+        task: TaskSpec | None = next(
+            (item for item in self._plan_unlocked(run).tasks if item.task_id == task_id), None
+        )
+        if task is None:
+            raise StoreError("task is not in the current approved plan")
+        if row["provider"] != task.assigned_provider or row["model"] != task.selected_model:
+            raise StoreError("persisted task assignment differs from the current plan")
+        for dependency in task.dependencies:
+            dependency_row = self._connection.execute(
+                "SELECT state FROM task_runs WHERE run_id = ? AND task_id = ?",
+                (run.run_id, dependency),
+            ).fetchone()
+            if dependency_row is None or dependency_row["state"] != TaskState.SUCCEEDED:
+                raise StoreError(f"dependency {dependency} has not succeeded")
+
+    def record_worktree(
+        self, run_id: str, task_id: str, path: Path, branch: str, base: str
+    ) -> None:
+        with self._lock:
+            with self._transaction():
+                run = self._run_unlocked(run_id)
+                if run.state not in {
+                    RunState.PROVISIONING,
+                    RunState.RUNNING,
+                } or not has_plan_execution_approval(run, self._approvals_unlocked(run_id)):
+                    raise StoreError("exact plan approval and provisioning state required")
+                row = self._connection.execute(
+                    "SELECT state, provider, model FROM task_runs WHERE run_id = ? AND task_id = ?",
+                    (run_id, task_id),
+                ).fetchone()
+                if row is None or row["state"] != TaskState.PENDING:
+                    raise StoreError("worktree can only be assigned to a pending task")
+                self._require_ready_task_unlocked(run, task_id, row)
+                self._connection.execute(
+                    "UPDATE task_runs SET worktree_path = ?, branch = ?, base_commit = ?, "
+                    "state = ?, updated_at = ? WHERE run_id = ? AND task_id = ?",
+                    (
+                        str(path),
+                        branch,
+                        base,
+                        TaskState.PROVISIONED,
+                        datetime.now(UTC).isoformat(),
+                        run_id,
+                        task_id,
+                    ),
+                )
+                self._insert_event_unlocked(
+                    run_id,
+                    EventType.WORKTREE_PROVISIONED,
+                    {"task_id": task_id, "base_commit": base},
+                )
+            self._mirror_after_commit_unlocked(run_id)
+
+    def begin_attempt(self, run_id: str, task_id: str) -> int:
+        """Authorize the sole Phase 2 Worker attempt; no implicit retry."""
+        with self._lock:
+            with self._transaction():
+                run = self._run_unlocked(run_id)
+                if run.state != RunState.RUNNING or not has_plan_execution_approval(
+                    run, self._approvals_unlocked(run_id)
+                ):
+                    raise StoreError("a RUNNING run with exact plan approval is required")
+                row = self._connection.execute(
+                    "SELECT task_run_id, state, worktree_path, provider, model FROM task_runs WHERE run_id = ? AND task_id = ?",
+                    (run_id, task_id),
+                ).fetchone()
+                if row is None or row["state"] != TaskState.PROVISIONED or not row["worktree_path"]:
+                    raise StoreError("task requires its dedicated provisioned worktree")
+                self._require_ready_task_unlocked(run, task_id, row)
+                count = self._connection.execute(
+                    "SELECT COUNT(*) FROM worker_attempts WHERE task_run_id = ?",
+                    (row["task_run_id"],),
+                ).fetchone()[0]
+                if count:
+                    raise StoreError("automatic retries are not supported")
+                self._connection.execute(
+                    "INSERT INTO worker_attempts (task_run_id, attempt_number, status, started_at) VALUES (?, 1, ?, ?)",
+                    (row["task_run_id"], TaskState.RUNNING, datetime.now(UTC).isoformat()),
+                )
+                attempt_id = self._connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+                self._connection.execute(
+                    "UPDATE task_runs SET state = ?, updated_at = ? WHERE task_run_id = ?",
+                    (TaskState.RUNNING, datetime.now(UTC).isoformat(), row["task_run_id"]),
+                )
+                self._insert_event_unlocked(
+                    run_id,
+                    EventType.TASK_STATE,
+                    {"task_id": task_id, "task_state": TaskState.RUNNING, "attempt_number": 1},
+                )
+            self._mirror_after_commit_unlocked(run_id)
+            return attempt_id
+
+    def set_attempt_pid(self, attempt_id: int, pid: int) -> None:
+        with self._lock:
+            self._connection.execute(
+                "UPDATE worker_attempts SET pid = ? WHERE attempt_id = ? AND status = ?",
+                (pid, attempt_id, TaskState.RUNNING),
+            )
+
+    def finish_attempt(
+        self,
+        run_id: str,
+        task_id: str,
+        attempt_id: int,
+        result: object,
+        changed_paths: tuple[str, ...],
+        violations: tuple[str, ...],
+        reason: str | None,
+    ) -> None:
+        """Persist bounded metadata and path evidence, never captured output."""
+        from .adapters.base import AdapterResult
+
+        if not isinstance(result, AdapterResult):
+            raise TypeError("result must be an AdapterResult")
+        state = (
+            TaskState.SUCCEEDED
+            if result.status == "succeeded" and not violations and not reason
+            else TaskState.FAILED
+        )
+        if result.cancelled:
+            state = TaskState.CANCELLED
+        with self._lock:
+            with self._transaction():
+                row = self._connection.execute(
+                    "SELECT task_run_id, state FROM task_runs WHERE run_id = ? AND task_id = ?",
+                    (run_id, task_id),
+                ).fetchone()
+                if row is None or row["state"] != TaskState.RUNNING:
+                    raise StoreError("only a running task attempt can finish")
+                cursor = self._connection.execute(
+                    "UPDATE worker_attempts SET status = ?, finished_at = ?, exit_code = ?, duration_seconds = ?, "
+                    "timed_out = ?, cancelled = ?, stdout_bytes = ?, stderr_bytes = ?, output_truncated = ?, reason = ? "
+                    "WHERE attempt_id = ? AND task_run_id = ? AND status = ?",
+                    (
+                        state.value,
+                        datetime.now(UTC).isoformat(),
+                        result.exit_code,
+                        result.duration_seconds,
+                        int(result.timed_out),
+                        int(result.cancelled),
+                        result.stdout_bytes,
+                        result.stderr_bytes,
+                        int(result.output_truncated),
+                        reason,
+                        attempt_id,
+                        row["task_run_id"],
+                        TaskState.RUNNING,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("attempt identity or state does not match")
+                self._connection.execute(
+                    "UPDATE task_runs SET state = ?, changed_paths_json = ?, out_of_scope_paths_json = ?, "
+                    "reason = ?, updated_at = ? WHERE task_run_id = ?",
+                    (
+                        state.value,
+                        json.dumps(changed_paths),
+                        json.dumps(violations),
+                        reason,
+                        datetime.now(UTC).isoformat(),
+                        row["task_run_id"],
+                    ),
+                )
+                self._insert_event_unlocked(
+                    run_id,
+                    EventType.TASK_STATE,
+                    {"task_id": task_id, "task_state": state.value, "attempt_number": 1},
+                )
+            self._mirror_after_commit_unlocked(run_id)
+
+    def block_task(self, run_id: str, task_id: str, reason: str) -> None:
+        with self._lock:
+            with self._transaction():
+                row = self._connection.execute(
+                    "SELECT state FROM task_runs WHERE run_id = ? AND task_id = ?",
+                    (run_id, task_id),
+                ).fetchone()
+                if row is None or row["state"] not in {TaskState.PENDING, TaskState.PROVISIONED}:
+                    raise StoreError("only a pending or provisioned task can be blocked")
+                self._connection.execute(
+                    "UPDATE task_runs SET state = ?, reason = ?, updated_at = ? WHERE run_id = ? AND task_id = ?",
+                    (TaskState.BLOCKED, reason, datetime.now(UTC).isoformat(), run_id, task_id),
+                )
+                self._insert_event_unlocked(
+                    run_id,
+                    EventType.TASK_STATE,
+                    {"task_id": task_id, "task_state": TaskState.BLOCKED, "attempt_number": 0},
+                )
+            self._mirror_after_commit_unlocked(run_id)
+
+    def recover_interrupted(self, run_id: str) -> int:
+        """Mark orphaned RUNNING attempts interrupted; never resume them."""
+        with self._lock:
+            with self._transaction():
+                run = self._run_unlocked(run_id)
+                rows = self._connection.execute(
+                    "SELECT a.attempt_id, t.task_run_id, t.task_id FROM worker_attempts a "
+                    "JOIN task_runs t ON t.task_run_id = a.task_run_id "
+                    "WHERE t.run_id = ? AND a.status = ? ORDER BY t.task_id",
+                    (run_id, TaskState.RUNNING),
+                ).fetchall()
+                for row in rows:
+                    now = datetime.now(UTC).isoformat()
+                    self._connection.execute(
+                        "UPDATE worker_attempts SET status = ?, finished_at = ?, reason = ? WHERE attempt_id = ?",
+                        (
+                            TaskState.INTERRUPTED,
+                            now,
+                            "process ownership lost on restart",
+                            row["attempt_id"],
+                        ),
+                    )
+                    self._connection.execute(
+                        "UPDATE task_runs SET state = ?, reason = ?, updated_at = ? WHERE task_run_id = ?",
+                        (
+                            TaskState.INTERRUPTED,
+                            "process ownership lost on restart",
+                            now,
+                            row["task_run_id"],
+                        ),
+                    )
+                    self._insert_event_unlocked(
+                        run_id,
+                        EventType.TASK_STATE,
+                        {
+                            "task_id": row["task_id"],
+                            "task_state": TaskState.INTERRUPTED,
+                            "attempt_number": 1,
+                        },
+                    )
+                if rows and run.state == RunState.RUNNING:
+                    updated = transition(run, RunState.BLOCKED, plan=self._plan_unlocked(run))
+                    self._write_run_unlocked(updated)
+                    self._insert_event_unlocked(
+                        run_id,
+                        EventType.STATE_TRANSITION,
+                        {
+                            "plan_revision": updated.plan_revision,
+                            "from_state": run.state.value,
+                            "to_state": updated.state.value,
+                        },
+                    )
+            if rows:
+                self._mirror_after_commit_unlocked(run_id)
+            return len(rows)

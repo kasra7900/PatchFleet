@@ -19,6 +19,8 @@ class EventType(StrEnum):
     STATE_TRANSITION = "STATE_TRANSITION"
     APPROVAL_RECORDED = "APPROVAL_RECORDED"
     RESULT_IDENTIFIED = "RESULT_IDENTIFIED"
+    TASK_STATE = "TASK_STATE"
+    WORKTREE_PROVISIONED = "WORKTREE_PROVISIONED"
 
 
 class Event(StrictModel):
@@ -38,6 +40,8 @@ class Event(StrictModel):
             {"approval_type", "decision", "subject_fingerprint", "plan_revision"}
         ),
         EventType.RESULT_IDENTIFIED: frozenset({"result_fingerprint"}),
+        EventType.TASK_STATE: frozenset({"task_id", "task_state", "attempt_number"}),
+        EventType.WORKTREE_PROVISIONED: frozenset({"task_id", "base_commit"}),
     }
 
     @field_validator("timestamp")
@@ -68,6 +72,31 @@ class Event(StrictModel):
                 type(value) is not str or value not in ApprovalDecision._value2member_map_
             ):
                 raise ValueError("decision must be recognized")
+            elif key == "task_id":
+                if (
+                    type(value) is not str
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None
+                ):
+                    raise ValueError("task_id must be a safe identifier")
+            elif key == "task_state":
+                if type(value) is not str or value not in {
+                    "PENDING",
+                    "PROVISIONED",
+                    "RUNNING",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "BLOCKED",
+                    "INTERRUPTED",
+                    "CANCELLED",
+                }:
+                    raise ValueError("task_state must be recognized")
+            elif key == "attempt_number":
+                if type(value) is not int or value < 0:
+                    raise ValueError("attempt_number must be non-negative")
+            elif key == "base_commit" and (
+                type(value) is not str or re.fullmatch(r"[0-9a-f]{40,64}", value) is None
+            ):
+                raise ValueError("base_commit must be a Git commit hash")
         return self
 
 

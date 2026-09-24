@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the intended v0.1 product. Phase 1 delivers contracts, plan validation and fingerprint CLI commands, guarded state transitions, and local persistence. Execution, interactive approval prompts, and adapters are future work.
+This document describes the intended v0.1 product. Phase 2 additionally delivers explicit local CLI configuration, capability diagnosis, persisted plan approval, bounded Worker execution in worktrees, and deterministic dependency scheduling. Leader conversations, verification, Reviewer execution, and applying changes remain future work.
 
 PatchFleet coordinates existing coding-agent CLIs on a local repository. The user explicitly chooses the provider and model for every Leader, Worker, and Reviewer assignment. PatchFleet must not infer, silently change, or fall back to a different provider or model. An unavailable selection blocks execution until the user makes a new choice.
 
@@ -51,11 +51,11 @@ The Reviewer may use a provider also used by a Worker, but the review must be a 
 
 ## Non-functional requirements
 
-- Python 3.11+; a small orchestration core using Typer for the CLI, asyncio and subprocess management for future execution, Pydantic for contracts, SQLite for state, and an explicit state machine.
+- Python 3.11+; a small orchestration core using Typer for the CLI, asyncio and subprocess management for local Worker execution, Pydantic for contracts, SQLite for state, and an explicit state machine.
 - Local-first operation without a PatchFleet account, cloud service, GitHub Issues, or web dashboard. The selected agent CLIs may have their own authentication and network requirements.
 - Crash recovery that can identify interrupted runs and ask the user how to proceed; no hidden automatic apply.
 - Clear, inspectable errors and logs; secrets should not be copied into event logs or displayed in routine output.
-- Portable behavior across supported local platforms where Git and the selected agent CLIs are available.
+- Local Git and CLI behavior where supported. The current single-executor lock uses POSIX `fcntl`; Windows support is deferred.
 - Tests for contract validation, state transitions, approval gates, and failure handling before v0.1 release.
 
 ## Safety and approval requirements

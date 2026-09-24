@@ -89,6 +89,14 @@ def _latest_decision(
     return next((approval.decision for approval in reversed(tuple(matching))), None)
 
 
+def has_plan_execution_approval(run: RunRecord, approvals: Sequence[ApprovalRecord]) -> bool:
+    """Check the latest decision for the exact run, revision, and plan fingerprint."""
+    return (
+        _latest_decision(run, approvals, ApprovalType.PLAN_EXECUTION, run.plan_fingerprint)
+        == ApprovalDecision.APPROVED
+    )
+
+
 def transition(
     run: RunRecord,
     target: RunState,
@@ -125,14 +133,12 @@ def transition(
         except PlanValidationError as error:
             raise TransitionError("plan_invalid", str(error)) from error
 
-    if target in {RunState.PROVISIONING, RunState.RUNNING}:
-        decision = _latest_decision(
-            run, approvals, ApprovalType.PLAN_EXECUTION, run.plan_fingerprint
+    if target in {RunState.PROVISIONING, RunState.RUNNING} and not has_plan_execution_approval(
+        run, approvals
+    ):
+        raise TransitionError(
+            "plan_approval_required", "exact current plan requires explicit execution approval"
         )
-        if decision != ApprovalDecision.APPROVED:
-            raise TransitionError(
-                "plan_approval_required", "exact current plan requires explicit execution approval"
-            )
 
     if target == RunState.WAITING_FOR_APPLY_APPROVAL and run.reviewed_result_fingerprint is None:
         raise TransitionError(
