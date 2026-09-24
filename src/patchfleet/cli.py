@@ -12,6 +12,8 @@ import yaml
 from .config import ConfigError, load_config
 from .contracts import Plan, plan_fingerprint
 from .execution import ExecutionError, approve_run, create_run, inspect_capabilities, start_run
+from .knowledge_cli import knowledge_app
+from .planning_cli import architecture_app, charter_app, context_app, leader_app
 from .storage import ApprovalError, SQLiteStore, StoreError
 from .validation import PlanValidationError, validate_plan
 from .worktrees import WorktreeError, inspect_repository
@@ -27,6 +29,11 @@ plan_app = typer.Typer(
 app.add_typer(plan_app, name="plan")
 run_app = typer.Typer(help="Create, approve, start, and inspect local runs.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
+app.add_typer(charter_app, name="charter")
+app.add_typer(context_app, name="context")
+app.add_typer(leader_app, name="leader")
+app.add_typer(architecture_app, name="architecture")
+app.add_typer(knowledge_app, name="knowledge")
 
 
 def _load_plan(path: Path) -> Plan:

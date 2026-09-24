@@ -1,0 +1,44 @@
+# Example only. PatchFleet never creates or enables this file for you.
+# Copy it to your target repository root as patchfleet.knowledge.yaml, adjust every
+# field, track it in Git, and set enabled: true only for sources you have vetted.
+#
+# Every source MUST declare a real license, a trust level, a canonical URL or
+# repository URL, and explicit domain or revision boundaries. An HTML source is
+# capped at exactly one explicit page in Phase 3B; no crawling is performed.
+schema_version: "0.1"
+sources: []
+#  - id: example-local-guide
+#    kind: markdown              # markdown | html | git
+#    path: docs/guide.md         # tracked, repository-relative Markdown file
+#    license: MIT
+#    trust: high                 # low | medium | high
+#    tags: [security]
+#    profiles: [security-sensitive]   # must be known built-in profile IDs
+#    stacks: [python]
+#    enabled: false              # you must enable each source deliberately
+#    max_pages: 1
+#
+#  - id: example-vendored-docs
+#    kind: git
+#    url: https://example.invalid/team/handbook.git
+#    revision: "0000000000000000000000000000000000000000"  # full 40-char commit
+#    paths: [docs/security.md]   # explicit Markdown files only
+#    license: CC-BY-4.0
+#    trust: medium
+#    tags: [handbook]
+#    profiles: [security-sensitive]
+#    stacks: [python]
+#    enabled: false
+#    max_pages: 1
+#
+#  - id: example-python-docs
+#    kind: html                  # one explicit page; HTTPS only unless loopback
+#    url: https://docs.python.org/3/library/pathlib.html
+#    domains: [docs.python.org]  # redirects must stay inside these domains
+#    license: PSF-2.0
+#    trust: high
+#    tags: [python, stdlib]
+#    profiles: [python-cli]
+#    stacks: [python]
+#    enabled: false
+#    max_pages: 1

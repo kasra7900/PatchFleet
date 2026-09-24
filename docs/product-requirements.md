@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the intended v0.1 product. Phase 2 additionally delivers explicit local CLI configuration, capability diagnosis, persisted plan approval, bounded Worker execution in worktrees, and deterministic dependency scheduling. Leader conversations, verification, Reviewer execution, and applying changes remain future work.
+This document describes the intended v0.1 product. Phase 3A adds a tracked Engineering Charter, explicitly selected versioned profiles, safe repository context, compiled Leader prompts, and a separate evidence-backed PlanningDossier gate. It does not invoke a Leader model or convert dossier readiness into approval. Phase 2 Worker execution remains unchanged. Interactive Leader conversations, knowledge retrieval, verification, Reviewer execution, and applying changes remain future work.
 
 PatchFleet coordinates existing coding-agent CLIs on a local repository. The user explicitly chooses the provider and model for every Leader, Worker, and Reviewer assignment. PatchFleet must not infer, silently change, or fall back to a different provider or model. An unavailable selection blocks execution until the user makes a new choice.
 
