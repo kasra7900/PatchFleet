@@ -4,7 +4,7 @@ PatchFleet is a local-first, human-approved CLI control plane for coordinating e
 
 Launching several agents is easy; keeping their assignments, dependencies, changes, and approvals coherent is harder. PatchFleet addresses that coordination problem while keeping the repository and decisions on your machine.
 
-Phase 0 is a foundation: documentation and an installable CLI with `--help`. It does **not** execute agents or change a repository.
+Phase 1 provides typed plan contracts, deterministic validation, plan fingerprints, guarded state transitions, explicit approval records, and local SQLite state with an inspectable JSONL event mirror. The CLI can validate and fingerprint YAML plans. It does **not** execute agents or change a repository.
 
 ## Core principles
 
@@ -22,7 +22,7 @@ flowchart TD
     U[User and PatchFleet CLI] --> O[Deterministic orchestrator]
     O --> P[Plan validation and approval gates]
     O --> S[(Local SQLite state)]
-    O --> E[(Append-only JSONL events)]
+    S --> E[(Append-only JSONL mirror)]
     O --> A[Agent CLI adapters]
     A --> L[User-selected Leader]
     A --> W[User-selected Workers in separate worktrees]
@@ -32,7 +32,7 @@ flowchart TD
     V --> G
 ```
 
-The diagram describes the planned system; only the CLI entry point exists in Phase 0.
+The contracts, validation, state machine, and local persistence exist in Phase 1. Agent adapters, worktrees, execution, verification, review, and application remain planned.
 
 ## Planned workflow
 
@@ -52,7 +52,7 @@ Failed validation, verification, or review pauses the flow for correction or rep
 | Phase | Planned outcome |
 | --- | --- |
 | 0 — Foundation | Product and architecture documents; installable `patchfleet --help`. |
-| 1 — Contracts and state | Pydantic plan/task schemas, validation, explicit transitions, local SQLite state, and JSONL events. |
+| 1 — Contracts and state | Implemented: Pydantic plan/task schemas, validation, explicit transitions, local SQLite state, and JSONL events. |
 | 2 — Local execution | User-configured Codex CLI and Claude Code adapters, bounded subprocess runs, one worktree per Worker, and resumable task tracking. |
 | 3 — Review and integration | Verification, a separate Reviewer run, approval prompts, and controlled apply to the main branch. |
 | v0.1 | A documented end-to-end local workflow with tests for the safety gates and failure paths. |
@@ -71,15 +71,19 @@ OpenCode support is planned after the initial adapters.
 
 Multiple terminals can run multiple agents, but they do not establish a shared task contract, dependency order, review evidence, or an auditable approval boundary. PatchFleet aims to supply those coordination rules around tools the user already chose. Its value is the controlled workflow, not another model interface.
 
-## Phase 0 quick start
+## Phase 1 quick start
 
 Python 3.11 or newer is required.
 
 ```bash
 python -m pip install -e .
 patchfleet --help
+patchfleet plan validate examples/plan.yaml
+patchfleet plan fingerprint examples/plan.yaml
 ```
 
-For tests, install the optional test dependency with `python -m pip install -e ".[test]"` and run `python -m pytest`.
+The plan commands are read-only: they neither approve a plan nor start a Worker. The fingerprint command prints the SHA-256 identity of a valid plan. The example uses illustrative model IDs; replace them with your own selections. The current schema is explained in the [task contract](docs/task-contract.md). The Python persistence API defaults to a project-local `.patchfleet/` directory; the plan CLI commands do not create it.
+
+For development, install `python -m pip install -e ".[dev]"` and run `python -m pytest`, `python -m ruff format --check .`, and `python -m ruff check .`.
 
 See [product requirements](docs/product-requirements.md), [architecture](docs/architecture.md), and the [proposed task contract](docs/task-contract.md). Contributions are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).

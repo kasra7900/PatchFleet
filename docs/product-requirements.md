@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the intended v0.1 product. Phase 0 delivers documentation and CLI help only. Execution, persistence, approval prompts, and adapters are future work.
+This document describes the intended v0.1 product. Phase 1 delivers contracts, plan validation and fingerprint CLI commands, guarded state transitions, and local persistence. Execution, interactive approval prompts, and adapters are future work.
 
 PatchFleet coordinates existing coding-agent CLIs on a local repository. The user explicitly chooses the provider and model for every Leader, Worker, and Reviewer assignment. PatchFleet must not infer, silently change, or fall back to a different provider or model. An unavailable selection blocks execution until the user makes a new choice.
 

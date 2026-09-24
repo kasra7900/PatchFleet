@@ -1,0 +1,36 @@
+# Structural example only. Replace each model ID with your own selection.
+schema_version: "0.1"
+plan_id: "example-config-check"
+title: "Add configuration validation"
+purpose: "Report missing local configuration keys clearly."
+leader:
+  assigned_provider: "codex-cli"
+  selected_model: "example-leader-model"
+  selected_role: "leader"
+reviewer:
+  assigned_provider: "claude-code"
+  selected_model: "example-reviewer-model"
+  selected_role: "reviewer"
+tasks:
+  - task_id: "T1"
+    title: "Validate configuration"
+    purpose: "Report missing and invalid settings."
+    dependencies: []
+    assigned_provider: "codex-cli"
+    selected_model: "example-worker-model"
+    selected_role: "worker"
+    allowed_paths:
+      - "src/patchfleet/config.py"
+      - "tests/test_config.py"
+    acceptance_criteria:
+      - "Missing keys produce a named error."
+    test_commands:
+      - "python -m pytest tests/test_config.py"
+    budget_limits:
+      max_wall_time_seconds: 900
+      max_attempts: 1
+      max_output_bytes: 1048576
+    reviewer:
+      assigned_provider: "claude-code"
+      selected_model: "example-reviewer-model"
+      selected_role: "reviewer"

@@ -1,6 +1,6 @@
 # Proposed plan and task contract
 
-The following YAML illustrates a future, versioned `Plan` with one `TaskSpec`. It is a proposal for discussion, not an executable Phase 0 file or a promise that these exact field names are final. PatchFleet will validate a plan and obtain the user's explicit approval before provisioning or running any Worker. A material revision requires renewed approval.
+The following YAML illustrates the implemented Phase 1 `Plan` and `TaskSpec` schema. Replace the model placeholders with your own selected model IDs. `patchfleet plan validate path/to/plan.yaml` checks this shape and its cross-task rules; `patchfleet plan fingerprint path/to/plan.yaml` prints the canonical SHA-256 identity. These commands only inspect a proposed contract. They do not approve or execute it.
 
 ```yaml
 schema_version: "0.1"
@@ -41,8 +41,8 @@ tasks:
       selected_role: "reviewer"
 ```
 
-`Plan` carries the request-level purpose, Leader and Reviewer assignments, and the ordered task set. `TaskSpec` carries one bounded unit of implementation. Every task has a unique ID; `dependencies` must refer to IDs in the same plan and form an acyclic graph. `allowed_paths` are repository-relative scopes. Test commands and budget limits are displayed for approval and must be checked against adapter capabilities before execution. A limit PatchFleet cannot measure or enforce must be called out rather than silently ignored.
+`Plan` carries the request-level purpose, Leader and Reviewer assignments, and the task set. `TaskSpec` carries one bounded unit of implementation. Every task has a unique ID; `dependencies` must refer to IDs in the same plan and form an acyclic graph. `allowed_paths` are normalized repository-relative scopes without absolute paths or `..` traversal. Acceptance criteria, test commands, and positive budgets are required. The fingerprint normalizes mapping keys and the order of tasks, dependencies, paths, and criteria; test command order remains significant. Phase 1 validates their presence but does not run commands or enforce runtime budgets; adapter capability checks belong to later phases.
 
 The `reviewer` on each task makes the review assignment explicit even when the same selected Reviewer covers the whole plan. The Reviewer must run separately from every Worker implementation run it reviews; a shared provider is allowed, a shared run is not. Provider and model strings are supplied by the user. PatchFleet must never replace them on failure or unavailability without a new user choice and approval.
 
-The first approval covers the validated plan, task boundaries, and execution. A second approval covers the specific reviewed result before any code is applied to the main branch. Approvals are tied to plan/result identities; edits after approval invalidate the affected approval.
+The `PLAN_EXECUTION` approval record covers the exact validated plan ID, fingerprint, and revision. A distinct `RESULT_APPLICATION` approval record covers the exact reviewed-result fingerprint. Both require an actor, UTC timestamp, and explicit `APPROVED` or `REJECTED` decision. Entering replanning invalidates earlier approvals even if a previous plan's content is restored. Phase 1 enforces these guards in the state machine; it does not yet provide approval CLI commands, run a Reviewer, or apply code to the main branch.

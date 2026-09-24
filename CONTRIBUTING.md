@@ -1,12 +1,14 @@
 # Contributing
 
-Thanks for helping build PatchFleet. Phase 0 contains a documented design and a minimal CLI; please keep proposed behavior clearly separate from implemented behavior.
+Thanks for helping build PatchFleet. Phase 1 contains typed contracts, guarded local state, and read-only plan CLI commands; please keep proposed behavior clearly separate from implemented behavior.
 
 Use Python 3.11 or newer. For a local editable install with tests:
 
 ```bash
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
 python -m pytest
+python -m ruff format --check .
+python -m ruff check .
 patchfleet --help
 ```
 
