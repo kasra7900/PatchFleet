@@ -2,13 +2,13 @@
 
 ## Status
 
-This is the intended v0.1 architecture. Phase 3A adds deterministic Leader planning inputs and a dossier gate without invoking a model. Phase 3B adds a local, citation-backed engineering knowledge layer that can optionally supply reference chunks to the Leader prompt. Phase 2 local Worker execution, Phase 1 contracts, approval guards, SQLite, and JSONL remain intact. Verification, review, and application remain design targets.
+This is the intended v0.1 architecture. Phase 3A adds deterministic Leader planning inputs and a dossier gate without invoking a model. Phase 3B adds a local, citation-backed engineering knowledge layer that can optionally supply reference chunks to the Leader prompt. Phase 4A adds the default interactive shell, guided first-run setup, local provider discovery, versioned non-secret personal preferences, and deterministic settings precedence; it invokes no Leader or Worker model. Phase 2 local Worker execution, Phase 1 contracts, approval guards, SQLite, and JSONL remain intact. Verification, review, and application remain design targets.
 
 ## Proposed Python modules
 
 | Module | Intended responsibility |
 | --- | --- |
-| `cli.py` | Implemented: plan validation/fingerprinting, read-only doctor/status, run creation, explicit approval, and Worker start. Interactive planning remains future work. |
+| `cli.py` | Implemented: plan validation/fingerprinting, read-only doctor/status, run creation, explicit approval, and Worker start. The bare command routes to the interactive shell when attached to a terminal and otherwise prints usage and exits non-zero. Live Leader planning remains future work. |
 | `contracts.py` | Implemented: Pydantic `Plan`, `TaskSpec`, assignments, budgets, approvals, run records, and canonical plan fingerprints. |
 | `validation.py` | Implemented: provider-independent structured schema/cross-task errors, role and path checks, dependency-cycle detection. Local adapter capability checks live in `adapters/` and `execution.py`. |
 | `state.py` | Implemented: explicit states, one pure transition function, legal-transition rules, and approval guards. |
@@ -35,6 +35,11 @@ This is the intended v0.1 architecture. Phase 3A adds deterministic Leader plann
 | `knowledge_embed.py` | Implemented: explicit local Sentence Transformers provider and vector/cosine helpers. No automatic downloads. |
 | `knowledge_retrieval.py` | Implemented: deterministic hybrid lexical+semantic retrieval via reciprocal-rank fusion with trust/tag/profile/stack filters. |
 | `knowledge_cli.py` | Implemented: validate, status, ingest, index, and search commands. |
+| `preferences.py` | Implemented (Phase 4A): versioned, validated, non-secret personal preferences in the platform user config directory, atomic writes with restrictive permissions, and explicit malformed-file errors. Never stores credentials, prompts, outputs, tokens, approvals, or repository state. |
+| `discovery.py` | Implemented (Phase 4A): local provider catalogue and bounded `--version`/`--help` discovery. Distinguishes installed providers, providers with an execution adapter, and detection-only providers. No network access and no agent task. |
+| `settings.py` | Implemented (Phase 4A): deterministic precedence of command options, valid project override, valid personal preferences, and safe built-in defaults. Project `.patchfleet/config.yaml` stays an advanced override; it defines no Leader/Worker selections. |
+| `shell.py` | Implemented (Phase 4A): prompt-based interactive shell and guided first-run setup. Prompts are separated from decisions and IO is injectable; the shell never invokes a Leader or Worker. |
+| `settings_cli.py` | Implemented (Phase 4A): the `settings` editor and read-only `settings show` surface. |
 
 The adapter interface receives an explicit provider, model, role, task context, worktree path, and limits. It translates these into argv arrays and normalizes exit status and bounded output metadata. `doctor` checks configured executables locally with `--version`/`--help`; a specific model's remote availability cannot be established offline. A CLI rejection fails visibly and never triggers a substitute provider or model. Codex CLI and Claude Code are the initial Worker adapters, with OpenCode later.
 
@@ -55,6 +60,18 @@ Ingestion is deliberately narrow: tracked local Markdown, explicit Markdown from
 Normalization then produces heading-aware chunks that preserve heading hierarchy and never split a code block, table, list, or heading from its context. Chunks target ~450 tokens with a 700-token cap and bounded prose overlap, carry a stable ID from source version, heading path, and content hash, and include title, heading path, locator, license, trust, tags, profiles, stacks, token count, and content hash. HTML extraction uses Trafilatura when installed and otherwise a conservative fallback that records a warning.
 
 The knowledge store is a separate SQLite database (`knowledge.sqlite3`) with relational source/snapshot/document/chunk metadata, FTS5 for BM25 lexical retrieval, and float32 vectors for semantic retrieval. Embeddings are optional: `knowledge index` requires an explicit existing local model path and revision and never downloads a model. When no model is configured, `knowledge status` reports "text indexed but semantic search unavailable" and retrieval stays lexical. Hybrid retrieval filters by trust, tags, stack, and engineering profile, retrieves lexical and semantic candidates separately, fuses them deterministically with reciprocal-rank fusion, and returns a small citation-bearing set. Retrieved text is reference data only: it is quoted and framed as non-instructional in the Leader prompt, and it never enters execution JSONL events or the execution SQLite store.
+
+## Interactive shell and personal preferences (Phase 4A)
+
+The bare `patchfleet` command is the default experience. When both stdin and stdout are terminals, it ensures personal preferences exist—running the guided first-run setup if not—then opens a lightweight prompt-based shell. In a non-interactive terminal it prints a concise explanation plus help and exits with a non-zero usage status; it never calls `input()` or blocks. All earlier subcommands (`doctor`, `plan`, `run`, `charter`, `context`, `leader`, `architecture`, `knowledge`) are unchanged, and `settings` is added. The shell supports `/help`, `/settings`, `/doctor`, `/new`, and `/quit`.
+
+The shell uses no full-screen TUI dependency. Presentation lives in `shell.py`; provider discovery, preference persistence, and precedence resolution are separate testable modules. Prompts are separated from decisions so the first-run flow can be driven with injected input and output. The shell displays the effective Leader, default Workers, maximum parallel Worker count, and discovered provider availability. `/new` captures a task request as a session-local draft and states that live Leader planning arrives in Phase 4B; the shell does not invoke a Leader or Worker, start a run, provision a worktree, record an approval, or launch an agent subprocess.
+
+Preferences are versioned, validated, and non-secret, and live in a platform-appropriate user configuration directory (via `platformdirs`), not in the target checkout. They store the schema version, optional provider executable overrides, explicit default Leader and Worker provider/model selections, the maximum parallel Worker count, and small UI preferences. They never store credentials, agent prompts, raw outputs, tokens, environment variables, approvals, or repository task state. Writes are atomic and use restrictive permissions where supported. A malformed preferences file raises an actionable error and is never overwritten without explicit confirmation; cancelling setup or declining to save writes nothing.
+
+Provider discovery is local and read-only. It resolves each provider's configured executable (a built-in name, a project override, or a personal override) and runs only bounded `--version`/`--help` checks. It never contacts a provider service, invokes an agent task, or downloads anything. It reports installed providers, whether an execution adapter exists (Codex CLI and Claude Code), and detection-only providers (OpenCode). A provider that does not expose the required explicit model/permission flags is installed but not execution-capable and cannot be selected; PatchFleet never substitutes a provider or model.
+
+Effective defaults resolve deterministically: explicit command options, then a valid target-repository `.patchfleet/config.yaml` override, then valid personal preferences, then safe built-in defaults. The project override remains compatible with the Phase 2 execution config and applies to execution settings such as the parallel limit and provider executable paths; it does not supply Leader/Worker selections, which only ever come from explicit user choices.
 
 ## Local persistence
 

@@ -6,7 +6,9 @@ Launching several agents is easy; keeping their assignments, dependencies, chang
 
 Phase 3A adds a user-owned Engineering Charter, versioned planning profiles, safe tracked-repository context, a compiled Leader prompt, and an evidence-backed Architecture Gate. It does **not** invoke a Leader model or approve a plan. Phase 3B adds an optional, local, citation-backed engineering knowledge layer that can feed the Leader prompt.
 
-Neither phase invokes a model or approves a plan. Phase 2's approved Worker path remains separate and unchanged; verification, review, and application are still unimplemented.
+Phase 4A turns the bare `patchfleet` command into a friendly, prompt-based terminal shell with guided first-run setup, local provider discovery, and personal defaults. It runs no Leader or Worker model and creates no run or approval. Live Leader planning and structured plan conversation arrive in Phase 4B; the interactive shell does **not** fake that capability.
+
+Neither Phase 3A, Phase 3B, nor Phase 4A invokes a model or approves a plan. Phase 2's approved Worker path remains separate and unchanged; verification, review, and application are still unimplemented.
 
 ## Core principles
 
@@ -42,7 +44,7 @@ flowchart TD
     R --> AP[Future user-approved apply gate]
 ```
 
-Contracts, validation, state machine, persistence, Codex CLI/Claude Code Worker adapters, worktrees, bounded execution, the Phase 3A planning dossier/gate, and the Phase 3B local knowledge store exist. Direct Leader invocation, verification, review, and application remain planned.
+Contracts, validation, state machine, persistence, Codex CLI/Claude Code Worker adapters, worktrees, bounded execution, the Phase 3A planning dossier/gate, the Phase 3B local knowledge store, and the Phase 4A interactive shell plus non-secret personal preferences exist. OpenCode is detected for future support only; no OpenCode execution adapter exists. Direct Leader invocation, verification, review, and application remain planned.
 
 ## Planned workflow
 
@@ -66,17 +68,19 @@ Failed validation, verification, or review pauses the flow for correction or rep
 | 2 — Local execution | Implemented: user-configured Codex CLI and Claude Code Worker adapters, bounded subprocess runs, one worktree per task, and durable attempts. Interrupted attempts require explicit later action; they are not resumed automatically. |
 | 3A — Leader Engineering Intelligence | Implemented: tracked Engineering Charter contract, explicit versioned profiles, safe repository context, prompt compilation, separate PlanningDossier, and deterministic Architecture Gate. No model invocation. |
 | 3B — Local engineering RAG | Implemented: tracked source registry, confirmed ingestion of local Markdown, pinned-Git Markdown, or one explicit HTML page, immutable local snapshots, heading-aware chunks, SQLite FTS5 plus optional local embeddings, hybrid citation retrieval, and optional Leader prompt citations. No crawling or model downloads. |
+| 4A — Interactive Fleet Setup | Implemented: default interactive shell, guided first-run setup, local provider discovery, versioned non-secret personal preferences, `settings show`, and deterministic project-override precedence. No Leader or Worker model is invoked. |
+| 4B — Leader conversation | Planned: the real Leader adapter and the structured plan conversation. |
 | Later — Review and integration | Verification, a separate Reviewer run, reviewed-result approval, and controlled apply to the main branch. |
 | v0.1 | A documented end-to-end local workflow with tests for the safety gates and failure paths. |
 
-OpenCode support is planned after the initial adapters.
+OpenCode is discovered locally for future support only; no OpenCode execution adapter exists in Phase 4A.
 
 ## Non-goals for v0.1
 
 - Choosing or switching providers or models on the user's behalf.
 - Replacing the underlying coding-agent CLIs or promising a security sandbox for them.
 - A hosted account, remote control plane, GitHub Issues dependency, or web dashboard.
-- A terminal UI, autonomous merging, or unattended application to the main branch.
+- A full-screen terminal UI, autonomous merging, or unattended application to the main branch. Phase 4A ships a lightweight prompt-based shell, not a TUI.
 - Agent-framework orchestration, distributed workers, or container infrastructure.
 - Web crawling, recursive domain scraping, PDF or book ingestion, a general web search engine, or a hosted vector database.
 - Automatic model downloads, automatic network access, embeddings without an explicit local model, or automatic provider/model selection.
@@ -85,12 +89,38 @@ OpenCode support is planned after the initial adapters.
 
 Multiple terminals can run multiple agents, but they do not establish a shared task contract, dependency order, review evidence, or an auditable approval boundary. PatchFleet aims to supply those coordination rules around tools the user already chose. Its value is the controlled workflow, not another model interface.
 
-## Local CLI quick start
+## Quick start
 
-Python 3.11 or newer is required.
+Python 3.11 or newer is required. No YAML file, Charter, dossier, or knowledge registry is needed to begin.
 
 ```bash
 python -m pip install -e .
+patchfleet
+```
+
+On a first run in an interactive terminal, PatchFleet discovers installed provider CLIs locally and guides you through choosing a default Leader provider/model, one or more default Worker provider/model assignments, and a maximum parallel Worker count. It stores only those non-secret choices in your personal preferences, then opens a prompt-based shell:
+
+```text
+$ patchfleet
+
+PatchFleet
+Leader: codex-cli / <your-leader-model>
+Workers: codex-cli / <your-worker-model>
+Maximum parallel Workers: 2
+Providers discovered locally:
+  Codex CLI (codex-cli): installed (version ...); execution adapter: yes
+  Claude Code (claude-code): not found
+  OpenCode (opencode): installed (version ...); execution adapter: no (detection only, future support)
+
+Type /help for commands, or describe what you want to build.
+>
+```
+
+The shell supports `/help`, `/settings`, `/doctor`, `/new`, and `/quit`. `/new` captures a task request as a session-local draft and states plainly that live Leader planning arrives in Phase 4B. The shell never invokes a Leader or Worker, starts no run, provisions no worktree, and records no approval. PatchFleet never picks or substitutes a provider or model: if no execution-capable provider is installed, setup explains what to install and leaves preferences uncreated. In a non-interactive terminal, `patchfleet` prints a short explanation plus help and exits with a non-zero usage status instead of blocking.
+
+The existing read-only plan commands remain available:
+
+```bash
 patchfleet --help
 patchfleet plan validate examples/plan.yaml
 patchfleet plan fingerprint examples/plan.yaml
@@ -98,9 +128,35 @@ patchfleet plan fingerprint examples/plan.yaml
 
 The plan commands are read-only: they neither approve a plan nor start a Worker. The fingerprint command prints the SHA-256 identity of a valid plan. The example uses illustrative model IDs; replace them with your own selections. The current schema is explained in the [task contract](docs/task-contract.md).
 
-## Phase 3A planning workflow
+## Personal preferences and settings
 
-The Engineering Charter is a user-owned, version-controlled `patchfleet.project.yaml` at the target repository root. It is separate from ignored `.patchfleet/` state. PatchFleet never creates it implicitly. To start from a commented template, explicitly run `charter init`, edit it, and track it with Git yourself:
+Personal preferences are versioned, validated, and non-secret. They live in a platform-appropriate user configuration directory (via `platformdirs`), for example `~/.config/patchfleet/preferences.yaml` on Linux. PatchFleet writes them atomically with restrictive permissions where supported. They are separate from target-repository `.patchfleet/` state, the tracked `patchfleet.project.yaml` charter, the tracked `patchfleet.knowledge.yaml` registry, and execution approval records. They store only the schema version, optional provider executable overrides, explicit default Leader and Worker provider/model selections, the maximum parallel Worker count, and small UI preferences. Credentials, tokens, environment variables, agent prompts, raw outputs, approvals, and repository task state are never stored there.
+
+```bash
+patchfleet settings          # guided editor; writes only after explicit confirmation
+patchfleet settings show     # read-only summary; safe in non-interactive environments
+```
+
+`settings show` labels every value with its source so a personal default is never confused with a project override. A malformed preferences file is reported with an offer to reconfigure and is never overwritten without confirmation. Cancelling setup, or declining to save, writes nothing.
+
+Effective defaults resolve deterministically, highest priority first:
+
+1. explicit command options;
+2. a valid target-repository `.patchfleet/config.yaml` override;
+3. valid personal preferences;
+4. safe built-in defaults.
+
+The project `.patchfleet/config.yaml` remains the advanced per-project execution override and is unchanged from Phase 2. It does not define Leader/Worker selections, which come only from explicit user choices.
+
+## Provider discovery boundaries
+
+Discovery is local and read-only. PatchFleet checks each provider's configured executable (a built-in name, a project override, or a personal override) and runs only bounded `--version`/`--help` capability checks. It never contacts a provider network service, never invokes an agent task, never downloads anything, and never selects a provider or model. Discovery distinguishes providers that are installed, providers that currently have an execution adapter (Codex CLI and Claude Code), and providers detected only for future support (OpenCode). A provider whose help output does not expose the required explicit model/flag contract is reported as installed but not execution-capable and cannot be selected.
+
+If a provider CLI is not on `PATH`, first-run setup and `patchfleet settings` let you enter an executable path for a known provider. The path is validated with the same local resolver and discovery, rediscovered immediately, and saved only as an explicit personal override; nothing is substituted. A user with a valid absolute path to Codex CLI can complete setup without creating or editing any PatchFleet YAML file.
+
+## Phase 3A planning workflow (advanced, opt-in)
+
+The Engineering Charter is an advanced, opt-in capability; the ordinary interactive flow above never requires it. The charter is a user-owned, version-controlled `patchfleet.project.yaml` at the target repository root. It is separate from ignored `.patchfleet/` state. PatchFleet never creates it implicitly. To start from a commented template, explicitly run `charter init`, edit it, and track it with Git yourself:
 
 ```bash
 patchfleet charter init --repo /path/to/target-repository
@@ -115,9 +171,9 @@ patchfleet architecture validate dossier.yaml --repo /path/to/target-repository
 
 `context inspect` reads only bounded tracked files, filters secret-like paths, and stores structural summaries rather than raw source in ignored local state. `leader prompt` compiles a prompt with the exact `PlanningDossier` JSON Schema and shows its safe local path; it never invokes a CLI or records the prompt in JSONL events. The Architecture Gate checks evidence references, charter/profile requirements, risk treatment, and the embedded execution Plan. A ready dossier is **not** an execution approval: the proposed Plan still needs the existing `plan validate`, `run create`, and explicit `run approve` flow. If Worker/Reviewer selections are missing, the Leader must ask the user rather than invent them. See the [planning contract](docs/task-contract.md#planning-dossier-phase-3a).
 
-## Phase 3B knowledge workflow
+## Phase 3B knowledge workflow (advanced, opt-in)
 
-Knowledge is opt-in and local. The tracked `patchfleet.knowledge.yaml` registry is never created for you: start from [examples/patchfleet.knowledge.example.yaml](examples/patchfleet.knowledge.example.yaml), declare a real license, trust level, canonical URL or pinned revision, and explicit domain/path boundaries, then set `enabled: true` only for sources you have vetted.
+Knowledge is an advanced, opt-in capability and is never required by the ordinary interactive flow. It is local and citation-backed. The tracked `patchfleet.knowledge.yaml` registry is never created for you: start from [examples/patchfleet.knowledge.example.yaml](examples/patchfleet.knowledge.example.yaml), declare a real license, trust level, canonical URL or pinned revision, and explicit domain/path boundaries, then set `enabled: true` only for sources you have vetted.
 
 ```bash
 patchfleet knowledge validate patchfleet.knowledge.yaml --repo /path/to/target-repository
@@ -166,8 +222,18 @@ patchfleet run status <run-id> --repo /path/to/target-repository
 
 `doctor` and `run status` are read-only. `doctor --plan` reports each selected Worker provider/model and whether its configured CLI exposes explicit model selection; it cannot confirm a model's remote availability offline. `run create` validates and stores the exact plan and target commit but does not launch a Worker. `run approve` records a `PLAN_EXECUTION` decision for that run's exact revision/fingerprint. `run start` requires this approval, an unchanged target HEAD, and every selected Worker provider configured and capable of expressing its selected model. It then runs dependency-ready tasks in isolated worktrees and stops at `VERIFYING` when all succeed; **no verification command runs in Phase 2**. Failures and out-of-scope changes remain visible in `run status`. There is no automatic retry or cleanup; inspect worktrees manually.
 
-Only Codex CLI and Claude Code Worker adapters are available. Their own credentials and network access may be needed when actually invoked; PatchFleet does not contact providers in `doctor`. Worktrees separate source changes but are **not security sandboxes**: a local CLI may access anything the invoking user can. Use only trusted CLIs and a separate OS-level sandbox if that boundary is needed.
+Only Codex CLI and Claude Code Worker adapters are available. OpenCode is discovered locally for future support only and has no execution adapter. Provider CLIs' own credentials and network access may be needed when actually invoked; PatchFleet does not contact providers during discovery, `doctor`, or `settings show`. Worktrees separate source changes but are **not security sandboxes**: a local CLI may access anything the invoking user can. Use only trusted CLIs and a separate OS-level sandbox if that boundary is needed.
 
-For development, install `python -m pip install -e ".[dev]"` and run `python -m pytest`, `python -m ruff format --check .`, and `python -m ruff check .`. The `knowledge` extra adds HTML extraction and local Sentence Transformers support; the base install and all tests work without it.
+For development, create a clean virtual environment so the declared dependencies (including `platformdirs`) are installed, then run the checks with that interpreter:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m ruff check .
+```
+
+The `knowledge` extra adds HTML extraction and local Sentence Transformers support; the base install and all tests work without it.
 
 See [product requirements](docs/product-requirements.md), [architecture](docs/architecture.md), and the [proposed task contract](docs/task-contract.md). Contributions are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).

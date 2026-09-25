@@ -9,9 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from .adapters import ADAPTERS
 from .adapters.base import AdapterRequest, AdapterResult, AdapterUnavailable, CLIAdapter
-from .adapters.claude_code import ClaudeCodeAdapter
-from .adapters.codex import CodexAdapter
 from .config import ConfigError, LocalConfig, load_config, resolve_executable
 from .contracts import ApprovalDecision, ApprovalRecord, ApprovalType, Plan, RunState, TaskSpec
 from .processes import supervise
@@ -32,9 +31,6 @@ from .worktrees import (
 
 class ExecutionError(ValueError):
     """The requested local execution cannot safely proceed."""
-
-
-ADAPTERS = {"codex-cli": CodexAdapter, "claude-code": ClaudeCodeAdapter}
 
 
 @contextmanager

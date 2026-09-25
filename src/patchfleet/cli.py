@@ -14,13 +14,15 @@ from .contracts import Plan, plan_fingerprint
 from .execution import ExecutionError, approve_run, create_run, inspect_capabilities, start_run
 from .knowledge_cli import knowledge_app
 from .planning_cli import architecture_app, charter_app, context_app, leader_app
+from .settings_cli import settings_app
+from .shell import is_interactive, run_interactive
 from .storage import ApprovalError, SQLiteStore, StoreError
 from .validation import PlanValidationError, validate_plan
 from .worktrees import WorktreeError, inspect_repository
 
 app = typer.Typer(
     help="Local-first, human-approved coordination for coding-agent CLIs.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     add_completion=False,
 )
 plan_app = typer.Typer(
@@ -34,6 +36,24 @@ app.add_typer(context_app, name="context")
 app.add_typer(leader_app, name="leader")
 app.add_typer(architecture_app, name="architecture")
 app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(settings_app, name="settings")
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Open the interactive shell, or print usage when not attached to a terminal."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if is_interactive():
+        raise typer.Exit(code=run_interactive())
+    typer.echo(
+        "PatchFleet is an interactive, local-first coding-agent shell.\n"
+        "No interactive terminal was detected, so guided setup did not start.\n"
+        "Open PatchFleet in a terminal, or use one of the commands below.",
+        err=True,
+    )
+    typer.echo(ctx.get_help())
+    raise typer.Exit(code=2)
 
 
 def _load_plan(path: Path) -> Plan:
