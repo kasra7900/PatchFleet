@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -27,10 +28,18 @@ class PreferencesError(ValueError):
 
 
 class Selection(StrictModel):
-    """An explicit user choice of provider and model; never inferred."""
+    """An explicit user choice of provider and model; never inferred.
+
+    ``catalog_source`` and ``catalog_discovered_at`` record which live provider
+    catalog the choice came from. They never carry credentials or raw catalog
+    data, and older preference files without them remain valid.
+    """
 
     provider: str
     model: str
+    reasoning_effort: str | None = None
+    catalog_source: str | None = None
+    catalog_discovered_at: datetime | None = None
 
     @field_validator("provider", "model")
     @classmethod
@@ -39,6 +48,23 @@ class Selection(StrictModel):
         if not value:
             raise ValueError("provider and model selections must not be blank")
         return value
+
+    @field_validator("reasoning_effort", "catalog_source")
+    @classmethod
+    def blank_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("catalog_discovered_at")
+    @classmethod
+    def utc_catalog_time(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("catalog discovery time must include a timezone")
+        return value.astimezone(UTC)
 
 
 class UiPreferences(StrictModel):

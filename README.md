@@ -10,7 +10,9 @@ Phase 4A turns the bare `patchfleet` command into a friendly, prompt-based termi
 
 Phase 4B makes the Leader real for Codex CLI. From inside a target Git repository, free text starts a bounded, read-only Leader planning conversation: the selected Leader either asks focused questions or returns a structured plan draft embedded as a normal PatchFleet `Plan`. The draft is validated against the exact user-selected Leader and Workers. It is a draft only — no Worker, run, approval, worktree, execution event, or Git change is created.
 
-Phase 3A, Phase 3B, Phase 4A, and Phase 4B never approve a plan or start a Worker. Phase 2's approved Worker path remains separate and unchanged; verification, review, and application are still unimplemented.
+Phase 4C turns PatchFleet into a full-screen terminal application: models are chosen from the user's live provider catalogs (Codex via its local `app-server`, OpenCode via `models --verbose`, Claude reported honestly as catalog-unavailable), an approved draft is handed into the durable Phase 2 run, and a live dashboard shows the Leader plus every active Worker with bounded streamed output. Approval and start remain explicit and separate.
+
+Nothing in Phase 3A, 3B, 4A, 4B, or 4C approves a plan or starts a Worker implicitly. Phase 2's approved Worker path remains the execution foundation; verification, review, and application are still unimplemented, and the fleet stops at `VERIFYING`.
 
 ## Core principles
 
@@ -72,11 +74,11 @@ Failed validation, verification, or review pauses the flow for correction or rep
 | 3B — Local engineering RAG | Implemented: tracked source registry, confirmed ingestion of local Markdown, pinned-Git Markdown, or one explicit HTML page, immutable local snapshots, heading-aware chunks, SQLite FTS5 plus optional local embeddings, hybrid citation retrieval, and optional Leader prompt citations. No crawling or model downloads. |
 | 4A — Interactive Fleet Setup | Implemented: default interactive shell, guided first-run setup, local provider discovery, versioned non-secret personal preferences, `settings show`, and deterministic project-override precedence. No Leader or Worker model is invoked. |
 | 4B — Live Leader conversation | Implemented for Codex CLI: a bounded read-only Leader turn per explicit user request, a versioned strict response contract, question/answer conversation, and a validated structured plan draft. Claude Code remains Worker-only; OpenCode remains detection-only. A draft is not execution authorization. |
-| 4C — Execution handoff | Planned: hand a reviewed, user-approved draft into the existing exact-plan approval and execution flow. |
+| 4C — Live catalogs, TUI, and fleet handoff | Implemented: provider-owned live model catalogs, a Textual full-screen Fleet TUI, and an explicit approve → exact durable run → start handoff with a live Leader/Worker dashboard. Phase 2 still ends at `VERIFYING`. |
 | Later — Review and integration | Verification, a separate Reviewer run, reviewed-result approval, and controlled apply to the main branch. |
 | v0.1 | A documented end-to-end local workflow with tests for the safety gates and failure paths. |
 
-Provider support is stated precisely: Codex CLI supports Worker execution and read-only Leader planning; Claude Code supports Worker execution only; OpenCode is detected locally for future support only, with no execution or Leader adapter.
+Provider support is stated precisely: Codex CLI supports Worker execution, read-only Leader planning, and live model cataloging through its local `codex app-server`; Claude Code supports Worker execution only and honestly reports that its CLI exposes no account-specific catalog command; OpenCode can provide a live catalog from `opencode models --verbose` but remains execution-disabled and Leader-disabled because no bounded adapter is implemented and tested.
 
 ## Non-goals for v0.1
 
@@ -182,9 +184,35 @@ Planning invokes exactly one explicitly selected Leader CLI, once per explicit u
 - One paid model call happens only for one explicit conversation turn. There is no retry, fallback, or extra call.
 - The prompt contains the current request and answer history, repository root and pinned HEAD, exact Leader and Worker selections, maximum parallelism, a bounded structural repository summary from the Phase 3A context machinery, and the exact response JSON Schema. Charter and RAG context are not part of the ordinary flow.
 - Conversation history, prompts, and raw Leader output are session-local and in memory only: never in preferences, JSONL execution events, the execution database, or the repository. A repository HEAD change between context capture and the response is rejected.
-- A validated plan draft is **not** execution authorization. Phase 4B never calls `run create`, `run approve`, `run start`, or a Worker adapter. The exact-plan approval flow remains Phase 2's; Phase 4C will connect an approved draft to it.
+- A validated plan draft is **not** execution authorization. Planning itself never calls `run create`, `run approve`, `run start`, or a Worker adapter; Phase 4C adds a separate, explicit Approve then Start handoff to Phase 2.
 
 Planning requires a target Git repository. Outside one, `/settings` and `/doctor` still work, but planning explains that it needs a repository and does not invoke the Leader.
+
+## Interactive Fleet experience (Phase 4C)
+
+Run `patchfleet` in an interactive terminal inside a Git repository to launch the full-screen Fleet TUI. The classic commands (`doctor`, `plan`, `run create`, `run approve`, `run start`, `run status`, `charter`, `context`, `leader`, `architecture`, `knowledge`, `settings show`) remain unchanged. If Textual or a real terminal is unavailable, PatchFleet falls back to the Phase 4B prompt shell.
+
+### Live model catalogs
+
+A model is selectable only from a fresh, successful provider catalog; there is no curated or fallback list anywhere, and no paid call is made merely to validate a model.
+
+- **Codex CLI** — PatchFleet starts the local, already-authenticated `codex app-server --stdio`, performs the documented JSON-RPC `initialize` / `initialized` handshake, calls `model/list`, follows `nextCursor` to completion, then shuts the subprocess down. Model id, display name, description, visibility, default reasoning effort, and supported reasoning efforts come from the account-specific response.
+- **OpenCode** — PatchFleet runs `opencode models --verbose` and parses the stable `provider/model` + JSON blocks, reflecting the user's currently connected OpenCode providers. OpenCode remains execution-disabled and Leader-disabled.
+- **Claude Code** — Claude's CLI documents aliases and explicit ids but no account-specific catalog command. PatchFleet reports catalog-unavailable with a clear explanation; it never shows a static Claude list and never asks the user to type a model id.
+
+Catalogs are cached in memory for the active TUI session only, and "Refresh catalog" is an explicit action. A saved selection that disappears from a fresh catalog is shown as unavailable and blocks new execution until reselected. Only the selected id and its catalog source/timestamp are stored in personal preferences; raw catalog data and credentials are never stored.
+
+### Approval and execution boundary
+
+The Fleet TUI preserves the exact Phase 1/2 guards: the Leader draft must pass `Plan` validation; the user explicitly chooses Approve, which creates the durable run and records the existing `PLAN_EXECUTION` approval for the exact plan fingerprint and revision; a separate "Start fleet" confirmation is then required before worktrees are provisioned and Workers start. A plan merely existing never starts anything.
+
+### Live fleet dashboard
+
+Once started, the Leader panel occupies the upper ~35% and Worker panels fill the lower region: one full-width panel for one Worker, two columns for two, a 2×2 grid for three or four, and a paged 2×2 grid for more than four. Narrow or short terminals switch to a single active Worker panel with `n`/`p` paging. Each panel shows task id/title, provider/model, state, attempt, elapsed time, worktree, dependency/block reason, and a bounded output tail.
+
+Raw Worker output exists only in the in-memory UI buffer. It is never written to events, SQLite, JSONL mirrors, preferences, or telemetry. Terminal control sequences are stripped, output is bounded and labeled when truncated, and completed/failed panels remain visible until the user exits or starts a new fleet. The Leader panel is a truthful coordination/status view driven by scheduler and process events; it does not claim the model is reviewing Worker output.
+
+Phase 2 ends at `VERIFYING`. This phase adds no automatic verification, review, Git application, commit, or push. `q` never silently abandons a running fleet: the TUI asks whether to cancel (and quit) or keep the fleet running in this session; there is no background daemon.
 
 ## Phase 3A planning workflow (advanced, opt-in)
 
@@ -254,7 +282,7 @@ patchfleet run status <run-id> --repo /path/to/target-repository
 
 `doctor` and `run status` are read-only. `doctor --plan` reports each selected Worker provider/model and whether its configured CLI exposes explicit model selection; it cannot confirm a model's remote availability offline. `run create` validates and stores the exact plan and target commit but does not launch a Worker. `run approve` records a `PLAN_EXECUTION` decision for that run's exact revision/fingerprint. `run start` requires this approval, an unchanged target HEAD, and every selected Worker provider configured and capable of expressing its selected model. It then runs dependency-ready tasks in isolated worktrees and stops at `VERIFYING` when all succeed; **no verification command runs in Phase 2**. Failures and out-of-scope changes remain visible in `run status`. There is no automatic retry or cleanup; inspect worktrees manually.
 
-Only Codex CLI and Claude Code Worker adapters are available. OpenCode is discovered locally for future support only and has no execution adapter. Provider CLIs' own credentials and network access may be needed when actually invoked; PatchFleet does not contact providers during discovery, `doctor`, or `settings show`. Worktrees separate source changes but are **not security sandboxes**: a local CLI may access anything the invoking user can. Use only trusted CLIs and a separate OS-level sandbox if that boundary is needed.
+Only Codex CLI and Claude Code Worker adapters are available. OpenCode can provide a live model catalog but has no execution or Leader adapter. Provider CLIs' own credentials and network access may be needed when actually invoked; PatchFleet does not contact a provider network service during discovery, `doctor`, `settings show`, or catalog fetching (cataloging uses only the provider's own local CLI or app-server). Worktrees separate source changes but are **not security sandboxes**: a local CLI may access anything the invoking user can. Use only trusted CLIs and a separate OS-level sandbox if that boundary is needed.
 
 For development, create a clean virtual environment so the declared dependencies (including `platformdirs`) are installed, then run the checks with that interpreter:
 

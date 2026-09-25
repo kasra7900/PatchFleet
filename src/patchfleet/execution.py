@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import threading
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 from uuid import uuid4
 
 from .adapters import ADAPTERS
@@ -31,6 +34,35 @@ from .worktrees import (
 
 class ExecutionError(ValueError):
     """The requested local execution cannot safely proceed."""
+
+
+class ExecutionObserver(Protocol):
+    """Optional live view hook for the interactive UI.
+
+    Implementations must remain advisory: the observer never changes scheduling,
+    guards, or persistence. Live output handed to an observer is display-only.
+    """
+
+    def task_output(self, task_id: str, stream: str, line: str) -> None: ...
+
+    def task_state(
+        self, task_id: str, state: str, attempt: int, reason: str | None = None
+    ) -> None: ...
+
+    def run_state(self, state: str) -> None: ...
+
+    def worktree(self, task_id: str, path: str) -> None: ...
+
+
+async def _forward_event(source: asyncio.Event, target: asyncio.Event) -> None:
+    await source.wait()
+    target.set()
+
+
+async def _forward_thread(source: threading.Event, target: asyncio.Event) -> None:
+    while not source.is_set():
+        await asyncio.sleep(0.05)
+    target.set()
 
 
 @contextmanager
@@ -133,6 +165,9 @@ async def _execute_task(
     info: WorktreeInfo,
     adapter: CLIAdapter,
     baseline: tuple[str, bytes],
+    observer: ExecutionObserver | None = None,
+    cancel_event: asyncio.Event | None = None,
+    task_cancel_event: threading.Event | None = None,
 ) -> None:
     request = AdapterRequest(
         run_id,
@@ -149,6 +184,14 @@ async def _execute_task(
     )
     command, prompt = adapter.build_command(request)
     attempt_id = store.begin_attempt(run_id, task.task_id)
+    if observer is not None:
+        observer.task_state(task.task_id, TaskState.RUNNING.value, 1)
+    local_cancel = asyncio.Event()
+    watchers: list[asyncio.Task] = []
+    if cancel_event is not None:
+        watchers.append(asyncio.create_task(_forward_event(cancel_event, local_cancel)))
+    if task_cancel_event is not None:
+        watchers.append(asyncio.create_task(_forward_thread(task_cancel_event, local_cancel)))
     try:
         process = await supervise(
             command,
@@ -157,6 +200,12 @@ async def _execute_task(
             timeout=task.budget_limits.max_wall_time_seconds,
             max_output_bytes=task.budget_limits.max_output_bytes,
             on_start=lambda pid: store.set_attempt_pid(attempt_id, pid),
+            on_output=(
+                (lambda stream, line: observer.task_output(task.task_id, stream, line))
+                if observer is not None
+                else None
+            ),
+            cancel_event=local_cancel if watchers else None,
         )
         result = AdapterResult.from_process(process)
         paths = changed_paths(info)
@@ -177,10 +226,31 @@ async def _execute_task(
     except (OSError, WorktreeError, AdapterUnavailable) as error:
         result = AdapterResult("failed", None, 0.0, False, False, 0, 0, False, 0)
         paths, violations, reason = (), (), str(error)
+    finally:
+        for watcher in watchers:
+            watcher.cancel()
+        if watchers:
+            await asyncio.gather(*watchers, return_exceptions=True)
     store.finish_attempt(run_id, task.task_id, attempt_id, result, paths, violations, reason)
+    if observer is not None:
+        final_state = (
+            TaskState.CANCELLED
+            if result.cancelled
+            else TaskState.SUCCEEDED
+            if result.status == "succeeded" and not violations and not reason
+            else TaskState.FAILED
+        )
+        observer.task_state(task.task_id, final_state.value, 1, reason)
 
 
-async def start_run(run_id: str, repository: Path) -> RunState:
+async def start_run(
+    run_id: str,
+    repository: Path,
+    observer: ExecutionObserver | None = None,
+    *,
+    cancel_event: asyncio.Event | None = None,
+    task_cancel_events: Mapping[str, threading.Event] | None = None,
+) -> RunState:
     root, current_base = inspect_repository(repository)
     with execution_lock(root), SQLiteStore(root / ".patchfleet") as store:
         if store.recover_interrupted(run_id):
@@ -209,6 +279,8 @@ async def start_run(run_id: str, repository: Path) -> RunState:
                 "persisted tasks differ from the current plan or have prior attempts; create a new run"
             )
         store.transition_run(run_id, RunState.PROVISIONING)
+        if observer is not None:
+            observer.run_state(RunState.PROVISIONING.value)
         try:
             config = load_config(root)
             capabilities = {
@@ -245,9 +317,15 @@ async def start_run(run_id: str, repository: Path) -> RunState:
         except (ConfigError, ExecutionError, AdapterUnavailable) as error:
             for task in plan.tasks:
                 store.block_task(run_id, task.task_id, str(error))
+                if observer is not None:
+                    observer.task_state(task.task_id, TaskState.BLOCKED.value, 0, str(error))
             store.transition_run(run_id, RunState.BLOCKED)
+            if observer is not None:
+                observer.run_state(RunState.BLOCKED.value)
             raise ExecutionError(str(error)) from error
         store.transition_run(run_id, RunState.RUNNING)
+        if observer is not None:
+            observer.run_state(RunState.RUNNING.value)
         baseline = primary_snapshot(root)
         task_by_id = {task.task_id: task for task in plan.tasks}
         while True:
@@ -255,6 +333,10 @@ async def start_run(run_id: str, repository: Path) -> RunState:
             while dependents := blocked_dependents(plan, states):
                 for task_id in dependents:
                     store.block_task(run_id, task_id, "prerequisite did not succeed")
+                    if observer is not None:
+                        observer.task_state(
+                            task_id, TaskState.BLOCKED.value, 0, "prerequisite did not succeed"
+                        )
                 states = _task_states(store, run_id)
             ready = ready_tasks(plan, states, config.execution.max_parallel_workers)
             if not ready:
@@ -266,24 +348,47 @@ async def start_run(run_id: str, repository: Path) -> RunState:
                     store.record_worktree(
                         run_id, task_id, info.worktree_path, info.branch, info.base_commit
                     )
-                    prepared.append((task_by_id[task_id], info, adapters[task_id]))
                 except (WorktreeError, StoreError) as error:
                     store.block_task(run_id, task_id, str(error))
+                    if observer is not None:
+                        observer.task_state(task_id, TaskState.BLOCKED.value, 0, str(error))
+                    continue
+                prepared.append((task_by_id[task_id], info, adapters[task_id]))
+                if observer is not None:
+                    observer.worktree(task_id, str(info.worktree_path))
+                    observer.task_state(task_id, TaskState.PROVISIONED.value, 0)
             try:
                 await asyncio.gather(
                     *(
-                        _execute_task(store, run_id, task, info, adapter, baseline)
+                        _execute_task(
+                            store,
+                            run_id,
+                            task,
+                            info,
+                            adapter,
+                            baseline,
+                            observer,
+                            cancel_event,
+                            (task_cancel_events or {}).get(task.task_id),
+                        )
                         for task, info, adapter in prepared
                     )
                 )
             except asyncio.CancelledError:
                 store.transition_run(run_id, RunState.CANCELLED)
+                if observer is not None:
+                    observer.run_state(RunState.CANCELLED.value)
                 raise
         states = _task_states(store, run_id)
-        if all(state == TaskState.SUCCEEDED for state in states.values()):
+        if cancel_event is not None and cancel_event.is_set():
+            store.transition_run(run_id, RunState.CANCELLED)
+        elif all(state == TaskState.SUCCEEDED for state in states.values()):
             store.transition_run(run_id, RunState.VERIFYING)
         elif any(state in {TaskState.FAILED, TaskState.CANCELLED} for state in states.values()):
             store.transition_run(run_id, RunState.FAILED)
         else:
             store.transition_run(run_id, RunState.BLOCKED)
-        return store.get_run(run_id).state
+        final = store.get_run(run_id).state
+        if observer is not None:
+            observer.run_state(final.value)
+        return final

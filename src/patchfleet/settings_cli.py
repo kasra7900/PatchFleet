@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,13 @@ settings_app = typer.Typer(
 )
 
 
+def _terminal_attached() -> bool:
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
 @settings_app.callback()
 def settings_root(ctx: typer.Context) -> None:
     """Open the guided settings editor; it writes only after explicit confirmation."""
@@ -37,6 +45,16 @@ def settings_root(ctx: typer.Context) -> None:
             err=True,
         )
         raise typer.Exit(code=2)
+    if _terminal_attached():
+        try:
+            from .tui import launch as tui_launch
+            from .tui import tui_available
+
+            if tui_available():
+                tui_launch(detect_repository())
+                return
+        except Exception:
+            pass
     run_settings_editor(default_shell_io(), repository=detect_repository())
 
 

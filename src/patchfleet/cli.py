@@ -3,6 +3,7 @@
 import asyncio
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -15,7 +16,7 @@ from .execution import ExecutionError, approve_run, create_run, inspect_capabili
 from .knowledge_cli import knowledge_app
 from .planning_cli import architecture_app, charter_app, context_app, leader_app
 from .settings_cli import settings_app
-from .shell import is_interactive, run_interactive
+from .shell import detect_repository, is_interactive, run_interactive
 from .storage import ApprovalError, SQLiteStore, StoreError
 from .validation import PlanValidationError, validate_plan
 from .worktrees import WorktreeError, inspect_repository
@@ -39,13 +40,35 @@ app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(settings_app, name="settings")
 
 
+def _terminal_attached() -> bool:
+    """A real local terminal is required for the full-screen application."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def launch_interactive() -> int:
+    """Launch the full-screen Fleet TUI, falling back to the prompt shell."""
+    if _terminal_attached():
+        try:
+            from .tui import launch as tui_launch
+            from .tui import tui_available
+
+            if tui_available():
+                return tui_launch(detect_repository())
+        except Exception:  # a UI failure must never wedge the CLI
+            pass
+    return run_interactive()
+
+
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     """Open the interactive shell, or print usage when not attached to a terminal."""
     if ctx.invoked_subcommand is not None:
         return
     if is_interactive():
-        raise typer.Exit(code=run_interactive())
+        raise typer.Exit(code=launch_interactive())
     typer.echo(
         "PatchFleet is an interactive, local-first coding-agent shell.\n"
         "No interactive terminal was detected, so guided setup did not start.\n"
