@@ -14,6 +14,7 @@ from patchfleet import cli, shell
 from patchfleet import preferences as preferences_module
 from patchfleet.cli import app
 from patchfleet.discovery import ProviderStatus, discover_providers_sync
+from patchfleet.leader_contracts import LeaderQuestions
 from patchfleet.preferences import (
     PreferencesError,
     Selection,
@@ -37,7 +38,10 @@ from patchfleet.shell import (
     run_shell,
 )
 
-CODEX_HELP = "exec --model --sandbox --print --permission-mode"
+CODEX_HELP = (
+    "exec --model --sandbox read-only --print --permission-mode "
+    "--output-schema --output-last-message"
+)
 
 
 def git(repo: Path, *args: str) -> str:
@@ -82,6 +86,8 @@ def status(
     installed: bool = True,
     adapter: bool = True,
     adapter_ready: bool = True,
+    leader: bool = False,
+    leader_ready: bool = True,
     version: str | None = "fake 1.0",
 ) -> ProviderStatus:
     return ProviderStatus(
@@ -92,13 +98,15 @@ def status(
         version=version if installed else None,
         execution_adapter=adapter,
         adapter_ready=adapter and adapter_ready,
-        detection_only=not adapter,
+        detection_only=not (adapter or leader),
         reason=None if installed else "not found",
+        leader_adapter=leader,
+        leader_ready=leader and leader_ready,
     )
 
 
 STANDARD_STATUSES = (
-    status("codex-cli"),
+    status("codex-cli", leader=True),
     status("claude-code", installed=False),
     status("opencode", adapter=False, adapter_ready=False),
 )
@@ -398,6 +406,17 @@ def test_shell_commands_do_not_create_runs_approvals_or_worktrees(
         raise AssertionError("shell must not discover or launch providers here")
 
     monkeypatch.setattr(shell, "discover_providers_sync", forbidden)
+    calls: list[str] = []
+
+    def fake_leader(session: object) -> LeaderQuestions:
+        calls.append("called")
+        return LeaderQuestions(
+            schema_version="0.1",
+            outcome="questions",
+            message="A couple of questions first.",
+            questions=("Should tasks be private per user?",),
+        )
+
     captured: list[str] = []
     io = scripted_io("/help", "/new", "add a health endpoint", "/doctor", "/quit", echo=captured)
     code = run_shell(
@@ -406,13 +425,15 @@ def test_shell_commands_do_not_create_runs_approvals_or_worktrees(
         settings=settings,
         repository=repository,
         preferences_path=path,
+        leader_runner=fake_leader,
     )
 
     assert code == 0
+    assert calls == ["called"]
     assert not (repository / ".patchfleet").exists()
     assert not path.exists()
     output = "\n".join(captured)
-    assert "Live Leader planning arrives in Phase 4B" in output
+    assert "Should tasks be private per user?" in output
     assert "no Worker, model, run, or approval was started" in output
 
 
@@ -462,7 +483,7 @@ def test_run_interactive_first_run_then_shell(
 
     assert code == 0
     assert path.is_file()
-    assert "Live Leader planning arrives in Phase 4B" in "\n".join(captured)
+    assert "Planning needs a target Git repository" in "\n".join(captured)
     reloaded = load_preferences(path)
     assert reloaded.max_parallel_workers == 2
 

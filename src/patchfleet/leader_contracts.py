@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
 from .contracts import Assignment, Fingerprint, Identifier, Plan, StrictModel
 
@@ -118,3 +118,86 @@ class PlanningDossier(StrictModel):
         if not value.strip():
             raise ValueError("value must not be blank")
         return value
+
+
+class LeaderTaskRationale(StrictModel):
+    task_id: Identifier
+    rationale: str
+
+    @field_validator("rationale")
+    @classmethod
+    def nonblank_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("task rationale must not be blank")
+        return value
+
+
+class LeaderQuestions(StrictModel):
+    """The Leader asks focused clarification questions instead of planning."""
+
+    schema_version: Literal["0.1"]
+    outcome: Literal["questions"]
+    message: str
+    questions: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def nonblank_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("assistant message must not be blank")
+        return value
+
+    @field_validator("questions")
+    @classmethod
+    def nonblank_questions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(value.strip() for value in values)
+        if any(not value for value in cleaned):
+            raise ValueError("questions must not be blank")
+        return cleaned
+
+
+class LeaderPlanDraft(StrictModel):
+    """A structured, unapproved plan draft returned by the Leader."""
+
+    schema_version: Literal["0.1"]
+    outcome: Literal["plan_draft"]
+    message: str
+    assumptions: tuple[str, ...]
+    risks: tuple[str, ...]
+    task_rationale: tuple[LeaderTaskRationale, ...] = Field(min_length=1)
+    worker_usage: str
+    proposed_plan: Plan
+
+    @field_validator("message", "worker_usage")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must not be blank")
+        return value
+
+    @field_validator("assumptions", "risks")
+    @classmethod
+    def nonblank_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(value.strip() for value in values)
+        if any(not value for value in cleaned):
+            raise ValueError("entries must not be blank")
+        return cleaned
+
+
+LeaderResponse = Annotated[LeaderQuestions | LeaderPlanDraft, Field(discriminator="outcome")]
+
+_RESPONSE_ADAPTER: TypeAdapter = TypeAdapter(LeaderResponse)
+
+
+def leader_response_schema() -> dict:
+    """Return a provider-facing JSON Schema for the strict response contract.
+
+    A plain ``anyOf`` of the two literal-outcome models is used so any
+    standards-compliant structured-output mechanism can consume it.
+    """
+    return TypeAdapter(LeaderQuestions | LeaderPlanDraft).json_schema()
+
+
+def parse_leader_response(text: str) -> LeaderQuestions | LeaderPlanDraft:
+    """Parse a JSON Leader response; callers convert errors to a bounded message."""
+    return _RESPONSE_ADAPTER.validate_json(text)

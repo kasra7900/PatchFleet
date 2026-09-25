@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .adapters import ADAPTERS
+from .leader_adapters import LEADER_ADAPTERS
 from .processes import ProcessResult, supervise
 
 
@@ -22,7 +23,8 @@ class ProviderSpec:
     provider_id: str
     display_name: str
     default_executable: str
-    execution_adapter: bool
+    worker_adapter: bool
+    leader_adapter: bool
     description: str
 
 
@@ -32,21 +34,24 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         "Codex CLI",
         "codex",
         True,
-        "OpenAI Codex CLI; a bounded Worker execution adapter exists.",
+        True,
+        "OpenAI Codex CLI; bounded Worker execution and read-only Leader planning adapters.",
     ),
     ProviderSpec(
         "claude-code",
         "Claude Code",
         "claude",
         True,
-        "Anthropic Claude Code; a bounded Worker execution adapter exists.",
+        False,
+        "Anthropic Claude Code; a bounded Worker execution adapter only.",
     ),
     ProviderSpec(
         "opencode",
         "OpenCode",
         "opencode",
         False,
-        "Detected for future support only; no execution adapter exists in this phase.",
+        False,
+        "Detected for future support only; no execution or Leader adapter exists.",
     ),
 )
 
@@ -67,10 +72,18 @@ class ProviderStatus:
     adapter_ready: bool
     detection_only: bool
     reason: str | None
+    leader_adapter: bool = False
+    leader_ready: bool = False
 
     @property
     def execution_capable(self) -> bool:
+        """Worker-execution capable (Phase 2 adapters)."""
         return self.installed and self.execution_adapter and self.adapter_ready
+
+    @property
+    def leader_capable(self) -> bool:
+        """Leader-planning capable (Phase 4B read-only adapters)."""
+        return self.installed and self.leader_adapter and self.leader_ready
 
 
 def resolve_executable(executable: str, base: Path | None = None) -> Path | None:
@@ -114,27 +127,46 @@ async def discover_providers(
                     executable,
                     False,
                     None,
-                    spec.execution_adapter,
+                    spec.worker_adapter,
                     False,
-                    not spec.execution_adapter,
+                    not (spec.worker_adapter or spec.leader_adapter),
                     "configured executable not found or not executable",
+                    spec.leader_adapter,
+                    False,
                 )
             )
             continue
-        if spec.execution_adapter:
-            capability = await ADAPTERS[spec.provider_id](resolved).detect()
-            installed = capability.version is not None or capability.available
+        if spec.worker_adapter or spec.leader_adapter:
+            worker_available = False
+            leader_available = False
+            version_text: str | None = None
+            reasons: list[str] = []
+            if spec.worker_adapter:
+                worker = await ADAPTERS[spec.provider_id](resolved).detect()
+                worker_available = worker.available
+                version_text = version_text or worker.version
+                if worker.reason:
+                    reasons.append(worker.reason)
+            if spec.leader_adapter:
+                leader = await LEADER_ADAPTERS[spec.provider_id](resolved).detect()
+                leader_available = leader.available
+                version_text = version_text or leader.version
+                if leader.reason:
+                    reasons.append(leader.reason)
+            installed = version_text is not None or worker_available or leader_available
             statuses.append(
                 ProviderStatus(
                     spec.provider_id,
                     spec.display_name,
                     str(resolved),
                     installed,
-                    capability.version,
-                    True,
-                    capability.available,
+                    version_text,
+                    spec.worker_adapter,
+                    worker_available,
                     False,
-                    capability.reason,
+                    "; ".join(dict.fromkeys(reasons)) or None,
+                    spec.leader_adapter,
+                    leader_available,
                 )
             )
             continue
@@ -157,6 +189,8 @@ async def discover_providers(
                     False,
                     True,
                     str(error),
+                    False,
+                    False,
                 )
             )
             continue
@@ -174,6 +208,8 @@ async def discover_providers(
                 None
                 if installed
                 else "executable responded to no local capability check (--version/--help)",
+                False,
+                False,
             )
         )
     return tuple(statuses)

@@ -16,11 +16,16 @@ from pathlib import Path
 
 import typer
 
+from . import planning
 from . import preferences as preferences_module
-from .discovery import ProviderStatus, discover_providers_sync
+from .discovery import ProviderStatus, discover_providers_sync, resolve_executable
+from .leader_adapters import LEADER_ADAPTERS, LeaderAdapter
+from .leader_contracts import LeaderQuestions, LeaderResponse
 from .preferences import PreferencesError, Selection, UiPreferences, UserPreferences
 from .settings import DEFAULT_MAX_PARALLEL_WORKERS, EffectiveSettings, resolve_settings
 from .worktrees import WorktreeError, inspect_repository
+
+PlanningRunner = Callable[[planning.PlanningSession], LeaderResponse]
 
 
 class WizardError(ValueError):
@@ -89,19 +94,26 @@ def execution_capable(statuses: tuple[ProviderStatus, ...]) -> tuple[ProviderSta
     return tuple(status for status in statuses if status.execution_capable)
 
 
+def leader_capable(statuses: tuple[ProviderStatus, ...]) -> tuple[ProviderStatus, ...]:
+    return tuple(status for status in statuses if status.leader_capable)
+
+
 def _describe(status: ProviderStatus) -> str:
     if not status.installed:
         return f"{status.display_name} ({status.provider_id}): not found"
     version = f"version {status.version}" if status.version else "version unknown"
+    capabilities: list[str] = []
     if status.execution_adapter:
-        adapter = "yes" if status.adapter_ready else "unusable"
+        capabilities.append("worker execution: " + ("yes" if status.adapter_ready else "unusable"))
+    if status.leader_adapter:
+        capabilities.append("leader planning: " + ("yes" if status.leader_ready else "unusable"))
+    if not capabilities:
         return (
             f"{status.display_name} ({status.provider_id}): installed ({version}); "
-            f"execution adapter: {adapter}"
+            "detection only (future support)"
         )
-    return (
-        f"{status.display_name} ({status.provider_id}): installed ({version}); "
-        "execution adapter: no (detection only, future support)"
+    return f"{status.display_name} ({status.provider_id}): installed ({version}); " + "; ".join(
+        capabilities
     )
 
 
@@ -116,12 +128,15 @@ def compact_provider_line(statuses: tuple[ProviderStatus, ...]) -> str:
     for status in statuses:
         if not status.installed:
             state = "not found"
-        elif status.execution_capable:
-            state = "ready"
-        elif status.execution_adapter:
-            state = "adapter unusable"
-        else:
+        elif not (status.execution_adapter or status.leader_adapter):
             state = "detection only"
+        else:
+            ready = []
+            if status.execution_capable:
+                ready.append("worker")
+            if status.leader_capable:
+                ready.append("leader")
+            state = "+".join(ready) if ready else "adapter unusable"
         parts.append(f"{status.provider_id}={state}")
     return "Providers: " + ", ".join(parts)
 
@@ -204,15 +219,22 @@ def build_preferences(
     ui: UiPreferences | None = None,
 ) -> UserPreferences:
     """Turn explicit answers into validated preferences without any fallback."""
-    capable = {status.provider_id: status for status in statuses if status.execution_capable}
-    if not capable:
+    leaders = {status.provider_id: status for status in statuses if status.leader_capable}
+    workers_capable = {
+        status.provider_id: status for status in statuses if status.execution_capable
+    }
+    if not leaders:
         raise WizardError(
-            "No execution-capable provider is installed; preferences were not created."
+            "No Leader-planning-capable provider is installed; preferences were not created."
         )
-    if answers.leader_provider not in capable:
+    if not workers_capable:
         raise WizardError(
-            f"Leader provider {answers.leader_provider!r} is not an installed execution-capable "
-            "provider; PatchFleet will not substitute another provider."
+            "No Worker-execution-capable provider is installed; preferences were not created."
+        )
+    if answers.leader_provider not in leaders:
+        raise WizardError(
+            f"Leader provider {answers.leader_provider!r} is not an installed "
+            "Leader-planning-capable provider; PatchFleet will not substitute another provider."
         )
     leader_model = answers.leader_model.strip()
     if not _safe_model(leader_model):
@@ -222,10 +244,11 @@ def build_preferences(
     if not answers.workers:
         raise WizardError("At least one explicit Worker selection is required.")
     for worker in answers.workers:
-        if worker.provider not in capable:
+        if worker.provider not in workers_capable:
             raise WizardError(
-                f"Worker provider {worker.provider!r} is not an installed execution-capable "
-                "provider; PatchFleet will not substitute another provider."
+                f"Worker provider {worker.provider!r} is not an installed "
+                "Worker-execution-capable provider; PatchFleet will not substitute another "
+                "provider."
             )
         if not _safe_model(worker.model):
             raise WizardError(
@@ -365,23 +388,25 @@ def _read_max_workers(io: ShellIO) -> int:
 def collect_setup_answers(
     io: ShellIO, statuses: tuple[ProviderStatus, ...]
 ) -> WizardAnswers | None:
-    capable = execution_capable(statuses)
-    if not capable:
-        io.write_error("No execution-capable provider CLI was found.")
+    leaders = leader_capable(statuses)
+    workers_capable = execution_capable(statuses)
+    if not leaders or not workers_capable:
+        io.write_error("No compatible provider CLI was found for planning and execution.")
         for line in provider_lines(statuses):
             io.write_error(line)
         io.write_error(
-            "Install and authenticate Codex CLI or Claude Code (or set an executable override), "
-            "then run patchfleet again. Preferences were left uncreated."
+            "Install and authenticate Codex CLI for Leader planning, and Codex CLI or Claude "
+            "Code for Worker execution (or set an executable override), then run patchfleet "
+            "again. Preferences were left uncreated."
         )
         return None
     io.write("Select your default Leader and Workers. PatchFleet never substitutes a choice.")
-    leader_provider = _choose_provider(io, capable, "Leader provider number (q to cancel): ")
+    leader_provider = _choose_provider(io, leaders, "Leader provider number (q to cancel): ")
     if leader_provider is None:
         return None
     leader_model = _read_model(io, leader_provider, "Leader")
     io.write("Now choose one or more default Workers.")
-    _print_choices(io, capable)
+    _print_choices(io, workers_capable)
     workers: list[Selection] = []
     while True:
         answer = io.read_line("Worker provider number (done to finish): ").strip().lower()
@@ -392,12 +417,12 @@ def collect_setup_answers(
             continue
         if answer in {"q", "quit", "/quit", "/exit"}:
             return None
-        if not (answer.isdigit() and 1 <= int(answer) <= len(capable)):
+        if not (answer.isdigit() and 1 <= int(answer) <= len(workers_capable)):
             io.write_error(
-                f"Enter a listed number between 1 and {len(capable)}, or done to finish."
+                f"Enter a listed number between 1 and {len(workers_capable)}, or done to finish."
             )
             continue
-        worker_provider = capable[int(answer) - 1]
+        worker_provider = workers_capable[int(answer) - 1]
         worker_model = _read_model(io, worker_provider, "Worker")
         workers.append(Selection(provider=worker_provider.provider_id, model=worker_model))
         io.write(f"Added Worker {worker_provider.provider_id} / {worker_model}.")
@@ -468,26 +493,151 @@ def run_settings_editor(
     )
 
 
-def _handle_new(io: ShellIO, request: str) -> None:
-    if not request:
-        io.write("No request captured; use /new to describe a task.")
+def _planning_refusal(
+    settings: EffectiveSettings,
+    statuses: tuple[ProviderStatus, ...],
+    repository: Path | None,
+) -> str | None:
+    """Explain why planning cannot start, or return ``None`` when it can."""
+    if repository is None:
+        return (
+            "Planning needs a target Git repository. Start PatchFleet inside the repository "
+            "you want to plan for."
+        )
+    if settings.leader is None:
+        return "No default Leader is configured. Run /settings to choose one."
+    status = next((item for item in statuses if item.provider_id == settings.leader.provider), None)
+    if status is None or not status.installed:
+        return (
+            f"Selected Leader {_selection_text(settings.leader)} is not installed. "
+            "Run /settings to choose an installed Leader."
+        )
+    if not status.leader_capable:
+        return (
+            f"Selected Leader {_selection_text(settings.leader)} is not Leader-planning capable. "
+            "Run /settings to choose a Leader-capable provider."
+        )
+    return None
+
+
+def _leader_adapter(
+    session: planning.PlanningSession, settings: EffectiveSettings
+) -> LeaderAdapter:
+    provider = session.leader.provider
+    adapter_class = LEADER_ADAPTERS.get(provider)
+    if adapter_class is None:
+        raise planning.PlanningError(
+            "leader_not_capable", f"{provider} has no Leader planning adapter"
+        )
+    configured = settings.provider_executables.get(provider, provider)
+    executable = resolve_executable(configured, base=session.repository)
+    if executable is None:
+        raise planning.PlanningError(
+            "leader_unavailable", f"executable for {provider} was not found"
+        )
+    return adapter_class(executable)
+
+
+def _run_leader_turn(
+    io: ShellIO,
+    session: planning.PlanningSession,
+    settings: EffectiveSettings,
+    leader_runner: PlanningRunner | None,
+) -> None:
+    io.write(f"Planning with {_selection_text(settings.leader)}…")
+    try:
+        if leader_runner is not None:
+            response = leader_runner(session)
+        else:
+            response = planning.invoke_leader_sync(session, _leader_adapter(session, settings))
+    except planning.PlanningError as error:
+        io.write_error(f"Leader planning failed: {error}.")
+        io.write("Nothing changed; revise your request or /cancel.")
         return
-    io.write("Local draft request captured for this session:")
-    io.write(f"  {request}")
-    io.write(
-        "Live Leader planning arrives in Phase 4B. PatchFleet did not contact a model and "
-        "created no run, approval, worktree, or plan."
-    )
+    try:
+        planning.apply_response(session, response)
+    except planning.PlanningError as error:
+        io.write_error(f"Leader response rejected: {error}.")
+        io.write("Nothing changed; revise your request or /cancel.")
+        session.pending_questions = ()
+        return
+    if isinstance(response, LeaderQuestions):
+        io.write("Leader:")
+        io.write(f"  {response.message}")
+        for question in response.questions:
+            io.write(f"  - {question}")
+        io.write("Answer below; /cancel discards this conversation.")
+    else:
+        _render_plan_draft(io, session)
+
+
+def _render_plan_draft(io: ShellIO, session: planning.PlanningSession) -> None:
+    plan = session.plan_draft
+    if plan is None:
+        io.write("No validated plan draft yet.")
+        return
+    io.write("Leader proposal:")
+    if session.last_message:
+        io.write(f"  {session.last_message}")
+    io.write("Tasks:")
+    for task in plan.tasks:
+        dependency_text = f" (after {', '.join(task.dependencies)})" if task.dependencies else ""
+        io.write(f"  - {task.task_id}: {task.title}{dependency_text}")
+        io.write(f"      {task.assigned_provider} / {task.selected_model}")
+    if session.draft_assumptions:
+        io.write("Assumptions:")
+        for item in session.draft_assumptions:
+            io.write(f"  - {item}")
+    if session.draft_risks:
+        io.write("Risks:")
+        for item in session.draft_risks:
+            io.write(f"  - {item}")
+    if session.draft_worker_usage:
+        io.write(f"Worker usage: {session.draft_worker_usage}")
+    io.write(f"Maximum parallel Workers: {session.max_parallel_workers}")
+    io.write("Planning draft is ready.")
+    io.write("No Worker was started and no execution approval exists.")
+    io.write("Interactive execution handoff arrives in the next phase.")
+
+
+def _start_planning(
+    io: ShellIO,
+    settings: EffectiveSettings,
+    statuses: tuple[ProviderStatus, ...],
+    repository: Path | None,
+    request: str,
+    leader_runner: PlanningRunner | None,
+) -> planning.PlanningSession | None:
+    refusal = _planning_refusal(settings, statuses, repository)
+    if refusal is not None:
+        io.write_error(refusal)
+        return None
+    assert settings.leader is not None and repository is not None
+    try:
+        session = planning.new_session(
+            leader=settings.leader,
+            workers=settings.workers,
+            max_parallel_workers=settings.max_parallel_workers,
+            repository=repository,
+            request=request,
+        )
+    except planning.PlanningError as error:
+        io.write_error(f"Could not start planning: {error}.")
+        return None
+    _run_leader_turn(io, session, settings, leader_runner)
+    return session
 
 
 def _print_help(io: ShellIO) -> None:
     io.write("Commands:")
-    io.write("  /help      Show this command list.")
-    io.write("  /settings  Review or change your personal defaults.")
-    io.write("  /doctor    Show local Git, provider, and effective-settings status.")
-    io.write("  /new       Capture a task request as a local draft.")
-    io.write("  /quit      Leave PatchFleet.")
-    io.write("You can also type a request directly; it is captured as a draft only.")
+    io.write("  /new [request]  Start or replace a planning conversation.")
+    io.write("  /plan           Show the current validated plan draft.")
+    io.write("  /cancel         Discard the in-memory conversation.")
+    io.write("  /settings       Review or change your personal defaults.")
+    io.write("  /doctor         Show local Git, provider, and effective-settings status.")
+    io.write("  /help           Show this command list.")
+    io.write("  /quit           Leave PatchFleet.")
+    io.write("Free text starts planning, or answers the Leader's latest question.")
 
 
 def _print_doctor(
@@ -516,7 +666,9 @@ def run_shell(
     preferences_path: Path | None = None,
     executable_overrides: dict[str, str] | None = None,
     show_provider_status: bool = True,
+    leader_runner: PlanningRunner | None = None,
 ) -> int:
+    session: planning.PlanningSession | None = None
     for line in banner_lines(settings, statuses, show_provider_status=show_provider_status):
         io.write(line)
     io.write("Type /help for commands, or describe what you want to build.")
@@ -531,7 +683,22 @@ def run_shell(
         if not line:
             continue
         if not line.startswith("/"):
-            _handle_new(io, line)
+            if session is None or (not session.pending_questions and session.plan_draft is None):
+                session = _start_planning(io, settings, statuses, repository, line, leader_runner)
+            elif session.pending_questions:
+                question = session.pending_questions[0]
+                session.dialogue.append((question, line))
+                session.pending_questions = session.pending_questions[1:]
+                if not session.pending_questions:
+                    _run_leader_turn(io, session, settings, leader_runner)
+            elif _confirm(
+                io, "A plan draft is active. Start a new conversation? [y/N]: ", default=False
+            ):
+                session = _start_planning(io, settings, statuses, repository, line, leader_runner)
+            else:
+                io.write(
+                    "Keeping the current draft. Use /plan to review it or /cancel to discard it."
+                )
             continue
         command, _, rest = line.partition(" ")
         command = command.lower()
@@ -541,8 +708,24 @@ def run_shell(
         if command == "/help":
             _print_help(io)
         elif command == "/new":
+            if session is not None and not _confirm(
+                io, "Replace the active planning conversation? [y/N]: ", default=False
+            ):
+                io.write("Keeping the current conversation.")
+                continue
             request = rest.strip() or io.read_line("Describe the task you want to plan: ").strip()
-            _handle_new(io, request)
+            session = _start_planning(io, settings, statuses, repository, request, leader_runner)
+        elif command == "/plan":
+            if session is not None and session.plan_draft is not None:
+                _render_plan_draft(io, session)
+            else:
+                io.write("No validated plan draft yet.")
+        elif command == "/cancel":
+            if session is None:
+                io.write("No planning conversation is active.")
+            else:
+                session = None
+                io.write("Conversation discarded. No further Leader request will be sent.")
         elif command == "/doctor":
             _print_doctor(io, settings, statuses, repository)
         elif command == "/settings":
@@ -565,6 +748,9 @@ def run_shell(
                 continue
             settings = resolve_settings(repository, stored)
             statuses = discover_providers_sync(settings.provider_executables, repository=repository)
+            if session is not None:
+                session = None
+                io.write("Active settings changed; the in-memory conversation was discarded.")
             io.write("Active defaults updated for this session:")
             io.write(f"Leader: {_selection_text(settings.leader)}")
             if settings.workers:
@@ -594,6 +780,7 @@ def run_interactive(
     *,
     preferences_path: Path | None = None,
     detect: bool = True,
+    leader_runner: PlanningRunner | None = None,
 ) -> int:
     """Open the first-run setup when needed, then the interactive shell."""
     io = io or default_shell_io()
@@ -634,4 +821,5 @@ def run_interactive(
         repository=repo,
         preferences_path=preferences_path,
         show_provider_status=prefs.ui.show_provider_status,
+        leader_runner=leader_runner,
     )

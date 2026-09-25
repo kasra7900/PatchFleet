@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the intended v0.1 product. Phase 3A adds a tracked Engineering Charter, explicitly selected versioned profiles, safe repository context, compiled Leader prompts, and a separate evidence-backed PlanningDossier gate. Phase 3B adds an optional local knowledge layer. Phase 4A changes the default experience: the bare `patchfleet` command opens a friendly interactive shell with guided first-run setup, local provider discovery, and versioned non-secret personal preferences. Phase 4A does not invoke a Leader or Worker model, does not create a plan or approval, and does not convert dossier readiness into approval. Phase 2 Worker execution remains unchanged. Interactive Leader conversations, verification, Reviewer execution, and applying changes remain future work.
+This document describes the intended v0.1 product. Phase 3A adds a tracked Engineering Charter, explicitly selected versioned profiles, safe repository context, compiled Leader prompts, and a separate evidence-backed PlanningDossier gate. Phase 3B adds an optional local knowledge layer. Phase 4A changes the default experience: the bare `patchfleet` command opens a friendly interactive shell with guided first-run setup, local provider discovery, and versioned non-secret personal preferences. Phase 4B makes the Leader real for Codex CLI: one bounded read-only Leader call per explicit user turn returns either focused questions or a strictly structured plan draft. A plan draft is validated but is not execution authorization. Phase 4B does not start a Worker, create a run, provision a worktree, or record an approval. Phase 2 Worker execution remains unchanged. Verification, Reviewer execution, and applying changes remain future work; Phase 4C will hand a reviewed, approved draft into the existing execution approval flow.
 
 PatchFleet coordinates existing coding-agent CLIs on a local repository. The user explicitly chooses the provider and model for every Leader, Worker, and Reviewer assignment. PatchFleet must not infer, silently change, or fall back to a different provider or model. An unavailable selection blocks execution until the user makes a new choice. The ordinary first run requires no YAML, Charter, dossier, or knowledge registry: PatchFleet discovers installed provider CLIs locally and asks the user for explicit defaults.
 
@@ -14,10 +14,10 @@ PatchFleet coordinates existing coding-agent CLIs on a local repository. The use
 
 ## Primary journey
 
-0. On first use, the user runs `patchfleet` with no configuration. PatchFleet discovers installed provider CLIs locally and the user explicitly chooses a default Leader, one or more default Workers, and a maximum parallel Worker count. In Phase 4A the shell captures a request as a draft and does not yet invoke a Leader.
-1. The user identifies a local repository, describes a change, and selects a Leader, one or more Workers, and a Reviewer with explicit provider/model identifiers.
-2. The Leader talks with the user, resolves ambiguities, and proposes a structured plan with bounded tasks.
-3. PatchFleet validates the proposed contract and presents the plan, assignments, budgets, and intended commands for inspection.
+0. On first use, the user runs `patchfleet` with no configuration. PatchFleet discovers installed provider CLIs locally and the user explicitly chooses a default Leader, one or more default Workers, and a maximum parallel Worker count.
+1. Inside a target Git repository, the user describes a change. In Phase 4B, free text starts a bounded read-only Leader conversation: the selected Codex CLI Leader either asks focused questions or returns a structured plan draft that uses only the user's explicit Worker selections. The draft is a draft, not execution authorization.
+2. The user selects a Leader, one or more Workers, and a Reviewer with explicit provider/model identifiers.
+3. PatchFleet validates the proposed plan, assignments, budgets, and intended commands and presents them for inspection.
 4. The user approves the plan. Rejection returns it for revision without starting Workers.
 5. PatchFleet provisions one Git worktree per Worker and schedules only tasks whose dependencies are satisfied.
 6. Workers execute their assigned tasks. PatchFleet records outputs, status, and limits; failures pause or require replanning.
@@ -50,12 +50,14 @@ The Reviewer may use a provider also used by a Worker, but the review must be a 
 - **FR-10 — Local traceability:** Store durable state in SQLite and append events to local JSONL logs so a user can inspect what happened.
 - **FR-11 — CLI operation:** Provide the workflow through a CLI without requiring a hosted service or dashboard.
 - **FR-12 — Approachable interactive entrypoint:** Open a prompt-based shell by default in a terminal, guide first-run setup, discover provider CLIs locally without network access or agent invocation, and persist only non-secret personal preferences. Never require project YAML, a Charter, a dossier, or a knowledge registry for the ordinary flow; keep them as advanced, opt-in capabilities. Never invent, substitute, or silently fall back to a provider or model.
+- **FR-13 — Live Leader planning:** For Codex CLI (the only implemented Leader provider), run exactly one bounded, read-only Leader subprocess per explicit user turn, with the selected model and the strongest documented read-only sandbox. Accept only a versioned strict `questions` or `plan_draft` response; validate any embedded `Plan` and reject a draft that changes the user's explicit Leader or Worker selections. Never retry, fall back, or make an extra paid call, and never create a run, worktree, approval, or execution event. Keep prompts, conversation history, and raw output session-local and out of preferences and event logs.
 
 ## Non-functional requirements
 
 - Python 3.11+; a small orchestration core using Typer for the CLI, asyncio and subprocess management for local Worker execution, Pydantic for contracts, SQLite for state, `platformdirs` for user configuration locations, and an explicit state machine.
 - Local-first operation without a PatchFleet account, cloud service, GitHub Issues, or web dashboard. Discovery, first-run setup, and `settings show` make no web requests, and PatchFleet sends no telemetry. The selected agent CLIs may have their own authentication and network requirements.
 - Deterministic effective-default precedence: explicit command options, then a valid project override, then valid personal preferences, then safe built-in defaults. Personal preferences remain separate from repository state and never contain secrets.
+- Precise provider support: Codex CLI supports Worker execution and read-only Leader planning; Claude Code supports Worker execution only; OpenCode is detection-only. One paid Leader call occurs only for one explicit conversation turn. Plans are drafts only, not execution authorization; Phase 4C will hand an approved draft into Phase 2 execution.
 - Crash recovery that can identify interrupted runs and ask the user how to proceed; no hidden automatic apply.
 - Clear, inspectable errors and logs; secrets should not be copied into event logs or displayed in routine output.
 - Local Git and CLI behavior where supported. The current single-executor lock uses POSIX `fcntl`; Windows support is deferred.
@@ -70,3 +72,5 @@ The Reviewer may use a provider also used by a Worker, but the review must be a 
 - The Reviewer must have a separate run identity from the implementer. A failed or missing review cannot be treated as approval.
 - Path allowlists and worktrees reduce accidental overlap but are not an operating-system security boundary. Untrusted agent CLIs require additional sandboxing outside the v0.1 promise.
 - Budget limits should be enforced when measurable; unsupported limits must be reported before execution rather than claimed as enforced.
+- A validated Leader plan draft is readiness for review, not approval. Planning is read-only and must not modify Git, start a Worker, or create a run, worktree, or approval. A provider that lacks a safe structured-output mechanism is not Leader-capable rather than being parsed from arbitrary prose.
+- Raw prompts, conversation history, and raw Leader output must not be written to personal preferences, execution JSONL events, the execution SQLite store, or source control.

@@ -6,9 +6,11 @@ Launching several agents is easy; keeping their assignments, dependencies, chang
 
 Phase 3A adds a user-owned Engineering Charter, versioned planning profiles, safe tracked-repository context, a compiled Leader prompt, and an evidence-backed Architecture Gate. It does **not** invoke a Leader model or approve a plan. Phase 3B adds an optional, local, citation-backed engineering knowledge layer that can feed the Leader prompt.
 
-Phase 4A turns the bare `patchfleet` command into a friendly, prompt-based terminal shell with guided first-run setup, local provider discovery, and personal defaults. It runs no Leader or Worker model and creates no run or approval. Live Leader planning and structured plan conversation arrive in Phase 4B; the interactive shell does **not** fake that capability.
+Phase 4A turns the bare `patchfleet` command into a friendly, prompt-based terminal shell with guided first-run setup, local provider discovery, and personal defaults.
 
-Neither Phase 3A, Phase 3B, nor Phase 4A invokes a model or approves a plan. Phase 2's approved Worker path remains separate and unchanged; verification, review, and application are still unimplemented.
+Phase 4B makes the Leader real for Codex CLI. From inside a target Git repository, free text starts a bounded, read-only Leader planning conversation: the selected Leader either asks focused questions or returns a structured plan draft embedded as a normal PatchFleet `Plan`. The draft is validated against the exact user-selected Leader and Workers. It is a draft only — no Worker, run, approval, worktree, execution event, or Git change is created.
+
+Phase 3A, Phase 3B, Phase 4A, and Phase 4B never approve a plan or start a Worker. Phase 2's approved Worker path remains separate and unchanged; verification, review, and application are still unimplemented.
 
 ## Core principles
 
@@ -44,12 +46,12 @@ flowchart TD
     R --> AP[Future user-approved apply gate]
 ```
 
-Contracts, validation, state machine, persistence, Codex CLI/Claude Code Worker adapters, worktrees, bounded execution, the Phase 3A planning dossier/gate, the Phase 3B local knowledge store, and the Phase 4A interactive shell plus non-secret personal preferences exist. OpenCode is detected for future support only; no OpenCode execution adapter exists. Direct Leader invocation, verification, review, and application remain planned.
+Contracts, validation, state machine, persistence, Codex CLI/Claude Code Worker adapters, worktrees, bounded execution, the Phase 3A planning dossier/gate, the Phase 3B local knowledge store, the Phase 4A interactive shell plus non-secret personal preferences, and the Phase 4B bounded Codex CLI Leader conversation exist. Codex CLI supports Worker execution and read-only Leader planning; Claude Code supports Worker execution only; OpenCode is detected for future support only, with no execution or Leader adapter. Verification, review, and application remain planned.
 
 ## Planned workflow
 
 1. The user states a request, owns the Engineering Charter and profile choices, explicitly selects the Leader provider/model, and may vetted-ingest citation-backed reference material.
-2. The selected Leader uses a manually supplied prompt plus repository evidence and optional knowledge citations to propose a PlanningDossier and task graph; direct Leader invocation is not yet implemented.
+2. For the advanced dossier path, a compiled prompt plus repository evidence and optional knowledge citations feed a manually driven PlanningDossier and task graph. Ordinary Leader conversation is implemented separately in Phase 4B.
 3. The user resolves open questions and explicitly selects every Worker and Reviewer provider/model. PatchFleet validates the dossier and embedded Plan.
 4. The user separately approves the exact execution Plan before any Worker starts.
 5. Workers execute bounded tasks in separate Git worktrees.
@@ -69,11 +71,12 @@ Failed validation, verification, or review pauses the flow for correction or rep
 | 3A — Leader Engineering Intelligence | Implemented: tracked Engineering Charter contract, explicit versioned profiles, safe repository context, prompt compilation, separate PlanningDossier, and deterministic Architecture Gate. No model invocation. |
 | 3B — Local engineering RAG | Implemented: tracked source registry, confirmed ingestion of local Markdown, pinned-Git Markdown, or one explicit HTML page, immutable local snapshots, heading-aware chunks, SQLite FTS5 plus optional local embeddings, hybrid citation retrieval, and optional Leader prompt citations. No crawling or model downloads. |
 | 4A — Interactive Fleet Setup | Implemented: default interactive shell, guided first-run setup, local provider discovery, versioned non-secret personal preferences, `settings show`, and deterministic project-override precedence. No Leader or Worker model is invoked. |
-| 4B — Leader conversation | Planned: the real Leader adapter and the structured plan conversation. |
+| 4B — Live Leader conversation | Implemented for Codex CLI: a bounded read-only Leader turn per explicit user request, a versioned strict response contract, question/answer conversation, and a validated structured plan draft. Claude Code remains Worker-only; OpenCode remains detection-only. A draft is not execution authorization. |
+| 4C — Execution handoff | Planned: hand a reviewed, user-approved draft into the existing exact-plan approval and execution flow. |
 | Later — Review and integration | Verification, a separate Reviewer run, reviewed-result approval, and controlled apply to the main branch. |
 | v0.1 | A documented end-to-end local workflow with tests for the safety gates and failure paths. |
 
-OpenCode is discovered locally for future support only; no OpenCode execution adapter exists in Phase 4A.
+Provider support is stated precisely: Codex CLI supports Worker execution and read-only Leader planning; Claude Code supports Worker execution only; OpenCode is detected locally for future support only, with no execution or Leader adapter.
 
 ## Non-goals for v0.1
 
@@ -108,15 +111,30 @@ Leader: codex-cli / <your-leader-model>
 Workers: codex-cli / <your-worker-model>
 Maximum parallel Workers: 2
 Providers discovered locally:
-  Codex CLI (codex-cli): installed (version ...); execution adapter: yes
+  Codex CLI (codex-cli): installed (version ...); worker execution: yes; leader planning: yes
   Claude Code (claude-code): not found
-  OpenCode (opencode): installed (version ...); execution adapter: no (detection only, future support)
+  OpenCode (opencode): installed (version ...); detection only (future support)
 
 Type /help for commands, or describe what you want to build.
->
+> Build a small REST API for tasks.
+
+Planning with codex-cli / <your-leader-model>…
+Leader:
+  Before I plan this, should tasks be private per user or shared?
+  - Should tasks be private per user or shared?
+> Private per user.
+
+Planning with codex-cli / <your-leader-model>…
+Leader proposal:
+  ...
+  - T1: API data model and endpoints
+      codex-cli / <your-worker-model>
+Planning draft is ready.
+No Worker was started and no execution approval exists.
+Interactive execution handoff arrives in the next phase.
 ```
 
-The shell supports `/help`, `/settings`, `/doctor`, `/new`, and `/quit`. `/new` captures a task request as a session-local draft and states plainly that live Leader planning arrives in Phase 4B. The shell never invokes a Leader or Worker, starts no run, provisions no worktree, and records no approval. PatchFleet never picks or substitutes a provider or model: if no execution-capable provider is installed, setup explains what to install and leaves preferences uncreated. In a non-interactive terminal, `patchfleet` prints a short explanation plus help and exits with a non-zero usage status instead of blocking.
+The shell supports `/new [request]`, `/plan`, `/cancel`, `/settings`, `/doctor`, `/help`, and `/quit`. Free text starts planning, or answers the Leader's latest question. The shell invokes the Leader only inside a target Git repository and only as a bounded local subprocess; it never starts a Worker, creates a run, provisions a worktree, records an approval, executes verification, or changes Git. PatchFleet never picks or substitutes a provider, model, or executable: if the selected Leader is unavailable or not Leader-capable, planning explains the problem and points to `/settings`. In a non-interactive terminal, `patchfleet` prints a short explanation plus help and exits with a non-zero usage status instead of blocking.
 
 The existing read-only plan commands remain available:
 
@@ -150,9 +168,23 @@ The project `.patchfleet/config.yaml` remains the advanced per-project execution
 
 ## Provider discovery boundaries
 
-Discovery is local and read-only. PatchFleet checks each provider's configured executable (a built-in name, a project override, or a personal override) and runs only bounded `--version`/`--help` capability checks. It never contacts a provider network service, never invokes an agent task, never downloads anything, and never selects a provider or model. Discovery distinguishes providers that are installed, providers that currently have an execution adapter (Codex CLI and Claude Code), and providers detected only for future support (OpenCode). A provider whose help output does not expose the required explicit model/flag contract is reported as installed but not execution-capable and cannot be selected.
+Discovery is local and read-only. PatchFleet checks each provider's configured executable (a built-in name, a project override, or a personal override) and runs only bounded `--version`/`--help` capability checks. It never contacts a provider network service, never invokes an agent task, never downloads anything, and never selects a provider or model. Discovery distinguishes Worker-execution capability, Leader-planning capability, and detection-only support. Codex CLI has both a Worker execution adapter and a read-only Leader planning adapter; Claude Code has a Worker execution adapter only; OpenCode is detection-only. A provider whose help output does not expose the required explicit model/flags (including Codex's `--sandbox read-only`, `--output-schema`, and `--output-last-message`) is reported as installed but not capable and cannot be selected for that role.
 
 If a provider CLI is not on `PATH`, first-run setup and `patchfleet settings` let you enter an executable path for a known provider. The path is validated with the same local resolver and discovery, rediscovered immediately, and saved only as an explicit personal override; nothing is substituted. A user with a valid absolute path to Codex CLI can complete setup without creating or editing any PatchFleet YAML file.
+
+## Live Leader planning (Phase 4B)
+
+Planning invokes exactly one explicitly selected Leader CLI, once per explicit user turn, only inside a target Git repository.
+
+- Codex CLI is the only implemented Leader provider. It runs as `codex exec --model <selected> --sandbox read-only --ephemeral --output-schema <file> --output-last-message <file> -` from the repository root with the prompt on stdin. PatchFleet uses argument arrays (never a shell string), the strongest documented read-only sandbox, wall-clock timeout, bounded stdout/stderr, bounded response size, and Ctrl-C cancellation.
+- The Leader returns exactly one strict JSON outcome: `questions` or `plan_draft` (schema version `0.1`). A `plan_draft` embeds an ordinary PatchFleet `Plan` plus assumptions, risks, per-task rationale, and a plain-language Worker-usage explanation.
+- A draft must pass existing `Plan` validation and use only the user's explicit Leader and Worker provider/model selections. A malformed, oversized, invalid, or substituted draft is rejected with a clear error; PatchFleet does not auto-correct by making another call.
+- One paid model call happens only for one explicit conversation turn. There is no retry, fallback, or extra call.
+- The prompt contains the current request and answer history, repository root and pinned HEAD, exact Leader and Worker selections, maximum parallelism, a bounded structural repository summary from the Phase 3A context machinery, and the exact response JSON Schema. Charter and RAG context are not part of the ordinary flow.
+- Conversation history, prompts, and raw Leader output are session-local and in memory only: never in preferences, JSONL execution events, the execution database, or the repository. A repository HEAD change between context capture and the response is rejected.
+- A validated plan draft is **not** execution authorization. Phase 4B never calls `run create`, `run approve`, `run start`, or a Worker adapter. The exact-plan approval flow remains Phase 2's; Phase 4C will connect an approved draft to it.
+
+Planning requires a target Git repository. Outside one, `/settings` and `/doctor` still work, but planning explains that it needs a repository and does not invoke the Leader.
 
 ## Phase 3A planning workflow (advanced, opt-in)
 
